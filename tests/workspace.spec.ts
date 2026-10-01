@@ -2,7 +2,8 @@ import { test, expect } from '@playwright/test'
 
 test('staff selection, transactions, review and sign-off survive a new session',async({page,context})=>{
   await page.goto('/')
-  await page.getByLabel('Workspace password').fill('local-integration-test-password')
+  await page.getByLabel('Username',{exact:true}).fill('admin')
+  await page.getByLabel('Password',{exact:true}).fill('local-integration-test-password')
   await page.getByRole('button',{name:'Sign in',exact:true}).click()
   await expect(page.getByRole('button',{name:'Refresh',exact:true})).toBeVisible()
   await expect(page.locator('fieldset')).toBeEnabled()
@@ -16,12 +17,12 @@ test('staff selection, transactions, review and sign-off survive a new session',
   await expect(page.locator('tfoot')).toContainText('1,000.00')
   await page.getByRole('button',{name:/Review Queue/}).click()
   await page.getByRole('combobox',{name:'Decision',exact:true}).selectOption('Cleared')
-  await page.getByLabel('Reviewed by',{exact:true}).fill('Test Reviewer')
+  await expect(page.getByLabel('Reviewed by',{exact:true})).toHaveValue('Admin')
   await page.getByLabel('Compliance comments',{exact:true}).fill('Verified source of funds')
   await page.getByRole('button',{name:'Save Review',exact:true}).click()
   await expect(page.getByText('Changes saved.',{exact:true})).toBeVisible()
   await page.getByRole('button',{name:'Reports & Sign-Off',exact:true}).click()
-  await page.getByLabel('Reviewed by',{exact:true}).fill('Test Reviewer')
+  await expect(page.getByLabel('Reviewed by',{exact:true})).toHaveValue('Admin')
   await page.getByLabel('Designation',{exact:true}).fill('Compliance Officer')
   await page.getByRole('combobox',{name:'Status',exact:true}).selectOption('Completed')
   await page.getByRole('button',{name:'Save Sign-Off',exact:true}).click()
@@ -30,12 +31,13 @@ test('staff selection, transactions, review and sign-off survive a new session',
   await expect(page.locator('fieldset')).toBeEnabled()
   await expect(page.getByText('3',{exact:true})).toBeVisible()
   await page.getByRole('button',{name:'Reports & Sign-Off',exact:true}).click()
-  await expect(page.getByLabel('Reviewed by',{exact:true})).toHaveValue('Test Reviewer')
+  await expect(page.getByLabel('Reviewed by',{exact:true})).toHaveValue('Admin')
   await expect(page.getByRole('combobox',{name:'Status',exact:true})).toHaveValue('Completed')
   await page.getByRole('button',{name:'Sign out',exact:true}).click()
-  await expect(page.getByLabel('Workspace password')).toBeVisible()
+  await expect(page.getByLabel('Password',{exact:true})).toBeVisible()
   expect((await context.request.get('/api/datasets')).status()).toBe(401)
-  await page.getByLabel('Workspace password').fill('local-integration-test-password')
+  await page.getByLabel('Username',{exact:true}).fill('admin')
+  await page.getByLabel('Password',{exact:true}).fill('local-integration-test-password')
   await page.getByRole('button',{name:'Sign in',exact:true}).click()
   await expect(page.locator('fieldset')).toBeEnabled()
   await page.getByRole('button',{name:'Monthly Upload',exact:true}).click()
@@ -51,8 +53,8 @@ test('staff selection, transactions, review and sign-off survive a new session',
 test('D1 imports are isolated, validated and protected from stale writes',async({request})=>{
   const headers={Origin:'http://127.0.0.1:8788'}
   expect((await request.get('/api/datasets')).status()).toBe(401)
-  expect((await request.post('/api/login',{headers,data:{password:'wrong'}})).status()).toBe(401)
-  expect((await request.post('/api/login',{headers,data:{password:'local-integration-test-password'}})).status()).toBe(200)
+  expect((await request.post('/api/login',{headers,data:{username:'admin',password:'wrong'}})).status()).toBe(401)
+  expect((await request.post('/api/login',{headers,data:{username:'admin',password:'local-integration-test-password'}})).status()).toBe(200)
   expect((await request.post('/api/imports',{headers:{Origin:'https://other.example'},data:{}})).status()).toBe(403)
   expect((await request.get('/api/unknown')).status()).toBe(404)
   const start=async(dataset:string,version:string,count:number)=>{
@@ -89,7 +91,7 @@ test('D1 imports are isolated, validated and protected from stale writes',async(
 
 test('reimporting one month resets its conclusions and preserves other months',async({request})=>{
   const headers={Origin:'http://127.0.0.1:8788'}
-  await request.post('/api/login',{headers,data:{password:'local-integration-test-password'}})
+  await request.post('/api/login',{headers,data:{username:'admin',password:'local-integration-test-password'}})
   async function save(dataset:string,version:string,items:unknown[]){
     const started=await request.post('/api/imports',{headers,data:{dataset,version,source:'monthly.csv',count:items.length}})
     expect(started.status()).toBe(200)
@@ -112,4 +114,47 @@ test('reimporting one month resets its conclusions and preserves other months',a
   expect(after.some((d:{name:string})=>d.name==='signoff:2026-10')).toBe(false)
   expect(after.find((d:{name:string})=>d.name==='transactions:2026-09')).toEqual(september)
   expect((await request.post('/api/imports',{headers,data:{padding:'x'.repeat(1_000_001)}})).status()).toBe(413)
+})
+
+test('temporary password change revokes sessions and compliance permissions are enforced',async({page,request})=>{
+  const headers={Origin:'http://127.0.0.1:8788'}
+  const login=await request.post('/api/login',{headers,data:{username:'compliance',password:'local-integration-test-password'}})
+  expect(login.status()).toBe(200)
+  expect((await login.json()).user).toMatchObject({role:'compliance',mustChangePassword:true})
+  expect((await request.get('/api/datasets')).status()).toBe(403)
+  await page.goto('/')
+  await page.getByLabel('Username',{exact:true}).fill('compliance')
+  await page.getByLabel('Password',{exact:true}).fill('local-integration-test-password')
+  await page.getByRole('button',{name:'Sign in',exact:true}).click()
+  await expect(page.getByRole('heading',{name:'Change password',exact:true})).toBeVisible()
+  await page.getByLabel('Current password',{exact:true}).fill('local-integration-test-password')
+  await page.getByLabel('New password',{exact:true}).fill('compliance-new-test-password')
+  await page.getByLabel('Confirm new password',{exact:true}).fill('compliance-new-test-password')
+  await page.getByRole('button',{name:'Save password',exact:true}).click()
+  await expect(page.getByRole('button',{name:'Sign in',exact:true})).toBeVisible()
+  expect((await request.get('/api/me')).status()).toBe(401)
+  expect((await request.post('/api/login',{headers,data:{username:'compliance',password:'local-integration-test-password'}})).status()).toBe(401)
+  await page.getByLabel('Username',{exact:true}).fill('compliance')
+  await page.getByLabel('Password',{exact:true}).fill('compliance-new-test-password')
+  await page.getByRole('button',{name:'Sign in',exact:true}).click()
+  await expect(page.locator('fieldset').first()).toBeEnabled()
+  await page.getByRole('button',{name:'Monitoring Rules',exact:true}).click()
+  await expect(page.getByRole('button',{name:'Save Rules',exact:true})).toBeDisabled()
+  for(const dataset of ['rules','signoff:2026-10']){
+    expect((await page.request.post('/api/imports',{headers,data:{dataset,version:'',source:'',count:1}})).status()).toBe(403)
+  }
+  const flagId='2026-10|name:octoberinvestor|TM-001'
+  const created=await page.request.post('/api/imports',{headers,data:{dataset:`review:${flagId}`,version:'',source:'',count:1}})
+  expect(created.status()).toBe(200)
+  const {id}=await created.json()
+  await page.request.put(`/api/imports/${id}`,{headers,data:{offset:0,items:[{flagId,decision:'Cleared',comments:'Reviewed',reviewedBy:'Spoofed Admin',reviewedAt:new Date().toISOString()}]}})
+  expect((await page.request.post(`/api/imports/${id}/commit`,{headers,data:{}})).status()).toBe(200)
+  const stored=await (await page.request.get(`/api/records?dataset=${encodeURIComponent(`review:${flagId}`)}&version=${id}`)).json()
+  expect(stored[0].reviewedBy).toBe('Compliance Officer')
+  expect((await request.post('/api/login',{headers,data:{username:'chiefcompliance',password:'local-integration-test-password'}})).status()).toBe(200)
+  const chief=await request.post('/api/imports',{headers,data:{dataset:'signoff:2026-10',version:'',source:'',count:1}})
+  expect(chief.status()).toBe(200)
+  // A user cannot finish another user's staged import, even with a privileged role.
+  const {id:chiefJob}=await chief.json()
+  expect((await page.request.post(`/api/imports/${chiefJob}/commit`,{headers,data:{}})).status()).toBe(404)
 })

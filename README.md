@@ -53,11 +53,19 @@ browser's changes. Use Refresh after a conflict. Prior committed revisions and
 an append-only save log are retained in D1; expired incomplete imports currently
 require administrator cleanup.
 
-The workspace uses a shared password, an eight-hour HTTP-only session cookie,
-server-side session revocation on logout, same-origin write checks, and sign-in
-rate limiting. `APP_PASSWORD` is a Worker secret, never a frontend variable.
-The API fails closed if the secret is absent. Reviewer names are entered by users;
-this shared login does not establish individual reviewer identity or roles.
+The workspace uses individual accounts with Admin, Compliance Officer, and Chief
+Compliance Officer roles. All three can read records, upload data, select staff,
+and save reviews. Only Admin and Chief Compliance Officer can change rules or
+save monthly sign-offs. The API enforces these permissions and records the
+signed-in user in the audit log and reviewer fields.
+
+Passwords are salted and hashed with PBKDF2-SHA256 and a separate `AUTH_PEPPER`
+Worker secret. Production accounts start with randomly generated temporary
+passwords and must change them before accessing records. Password changes require
+the current password, a new password of at least 16 characters, and revoke all
+sessions for that account. Sessions expire after eight hours; logout revokes the
+session immediately. Same-origin writes and sign-in/password rate limits apply.
+There is no public registration or shared-password fallback.
 
 ## Run locally
 
@@ -65,8 +73,10 @@ this shared login does not establish individual reviewer identity or roles.
 npm ci
 ```
 
-Create an ignored `.dev.vars` file containing `APP_PASSWORD=<your-local-password>`.
-A local development file may already exist; choose your own password in that file.
+Create an ignored `.dev.vars` file containing a random `AUTH_PEPPER` value of at
+least 32 characters. Account password hashes must be generated with that same
+pepper. The Playwright suite seeds isolated test accounts automatically; it does
+not alter development or production users.
 
 ```bash
 npm run db:migrate:local
@@ -79,21 +89,32 @@ D1. Wrangler rebuilds assets on startup. Restart after frontend changes.
 ## Cloudflare Workers deployment
 
 `wrangler.jsonc` binds `DB` to `transactionmonitor-db`. That database has been
-created and migration `0001_workspace.sql` applied remotely. No test data has been
+created and migrations `0001_workspace.sql` and `0002_user_accounts.sql` applied remotely. No test data has been
 uploaded to the remote database.
 
-Before first deployment, set the shared password using the interactive prompt:
+Production account setup uses `scripts/prepare-production-users.mjs` to generate
+three users and ignored files under `private-data/production-accounts/`. Never
+rerun account preparation to reset passwords or rotate the pepper; existing
+password hashes depend on it. Store the pepper securely with database backups.
+
+Initial setup (already performed for this workspace once deployed):
 
 ```bash
-npx wrangler secret put APP_PASSWORD
+node --experimental-strip-types scripts/prepare-production-users.mjs
 npm run db:migrate:remote
+npx wrangler secret bulk private-data/production-accounts/secrets.json
+npx wrangler d1 execute DB --remote --file private-data/production-accounts/accounts.sql
 npm run deploy
 ```
+
+`credentials.md` in that ignored directory contains the initial passwords for
+`admin`, `compliance`, and `chiefcompliance`. The production credentials are not
+committed to Git, printed to build logs, or included in frontend assets.
 
 For Workers Builds use repository root `/`, leave the build command empty, and
 keep deploy command `npx wrangler deploy`. Wrangler builds the frontend and Worker;
 static assets come only from `dist/`. The Worker name is `transactionmonitor`.
-Set `APP_PASSWORD` as a runtime Worker secret, not merely a build variable.
+Keep `AUTH_PEPPER` as a runtime Worker secret, not a build variable.
 For future schema changes, apply reviewed migrations before deploying dependent code.
 
 ```bash
@@ -136,4 +157,4 @@ Original workbook files are not stored. Imported records and reference data are 
 
 ## Production hardening still recommended
 
-Further controls for a formal compliance system include individual authentication and roles, enforced monthly locking, a defined retention/backup policy, and user-ID-based investor matching. Sign-off currently records a conclusion without locking edits. The existing `xlsx` dependency has npm audit advisories; upgrading its distribution requires separate compatibility review.
+Further controls for a formal compliance system include named employee account assignment, enforced monthly locking, a defined retention/backup policy, and user-ID-based investor matching. Sign-off currently records a conclusion without locking edits. The existing `xlsx` dependency has npm audit advisories; upgrading its distribution requires separate compatibility review.

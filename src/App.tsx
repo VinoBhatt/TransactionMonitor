@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, readDataset, request, writeDataset } from './api'
 import type { Dataset } from './api'
-import { Login } from './Login'
+import { Login, ChangePassword } from './Login'
+import { canWrite, roleLabels } from '../shared/auth'
+import type { User } from '../shared/auth'
 import type { Signoff } from '../shared/schema'
 import type { Flag, HistoricalInvestor, NoteMasterRow, PriorComplianceContext, ReviewDecision, ReviewRecord, RuleConfig, StaffMember, Transaction } from './types'
 import { exportRowsToXlsx, monthKey, monthLabel, parseGenericTable, parseHistoricalWorkbook, parseNoteMaster, parsePriorMonitoringWorkbook, normalizeName, parseWorkbook, runRules, staffInvestments } from './monitoring'
@@ -21,18 +23,19 @@ const rm = (n:number) => `RM ${n.toLocaleString('en-MY',{minimumFractionDigits:2
 const fmtDate = (d:Date|null) => d ? new Intl.DateTimeFormat('en-MY',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d) : '—'
 
 export default function App(){
-  const [session,setSession]=useState<'loading'|'signed-in'|'signed-out'>('loading')
+  const [user,setUser]=useState<User|null>(null)
+  const [loading,setLoading]=useState(true),[changingPassword,setChangingPassword]=useState(false)
   const [error,setError]=useState('')
-  useEffect(()=>{request('/datasets').then(()=>setSession('signed-in')).catch(e=>{
-    if(e instanceof ApiError && e.status===401)setSession('signed-out')
-    else setError(e.message)
-  })},[])
-  if(session==='signed-out')return <Login onLogin={()=>setSession('signed-in')}/>
-  if(session==='loading')return <main className="login-page"><div className="card"><h2>{error?'Workspace unavailable':'Opening workspace?'}</h2>{error&&<><p role="alert">{error}</p><button onClick={()=>window.location.reload()}>Retry</button></>}</div></main>
-  return <Workspace onLogout={()=>setSession('signed-out')}/>
+  useEffect(()=>{request<{user:User}>('/me').then(data=>setUser(data.user)).catch(e=>{
+    if(!(e instanceof ApiError && e.status===401))setError(e.message)
+  }).finally(()=>setLoading(false))},[])
+  if(loading||error)return <main className="login-page"><div className="card"><h2>{error?'Workspace unavailable':'Opening workspace...'}</h2>{error&&<><p role="alert">{error}</p><button onClick={()=>window.location.reload()}>Retry</button></>}</div></main>
+  if(!user)return <Login onLogin={setUser}/>
+  if(user.mustChangePassword||changingPassword)return <ChangePassword user={user} onDone={()=>{setUser(null);setChangingPassword(false)}} onCancel={user.mustChangePassword?undefined:()=>setChangingPassword(false)}/>
+  return <Workspace user={user} onLogout={()=>setUser(null)} onChangePassword={()=>setChangingPassword(true)}/>
 }
 
-function Workspace({onLogout}:{onLogout:()=>void}){
+function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void,onChangePassword:()=>void}){
   const [tab,setTab]=useState<Tab>('dashboard')
   const [transactions,setTransactions]=useState<Transaction[]>([])
   const [sourceName,setSourceName]=useState('')
@@ -169,7 +172,7 @@ function Workspace({onLogout}:{onLogout:()=>void}){
     </aside>
 
     <main>
-      <div className="workspace-toolbar"><span className="badge cleared">Shared workspace</span><div><button className="secondary" disabled={busy} onClick={()=>void reload()}>Refresh</button><button className="secondary" disabled={busy} onClick={()=>void request('/logout','POST',{}).then(onLogout).catch(handleError)}>Sign out</button></div></div>
+      <div className="workspace-toolbar"><span className="badge cleared">{user.displayName} | {roleLabels[user.role]}</span><div><button className="secondary" disabled={busy} onClick={onChangePassword}>Change password</button><button className="secondary" disabled={busy} onClick={()=>void reload()}>Refresh</button><button className="secondary" disabled={busy} onClick={()=>void request('/logout','POST',{}).then(onLogout).catch(handleError)}>Sign out</button></div></div>
       <header className="topbar"><div><h1>{tabTitle(tab)}</h1><p>{sourceName?`Source: ${sourceName}`:'No monthly transaction file loaded'}</p></div>{months.length>0&&<select value={activeMonth} onChange={e=>setFilterMonth(e.target.value)}>{months.map(m=><option key={m} value={m}>{monthLabel(m)}</option>)}</select>}</header>
       {message&&<div className="notice" role="status">{message}</div>}
       {!ready&&<div className="notice">Loading saved records? If loading fails, use Refresh to retry.</div>}
@@ -199,7 +202,7 @@ function Workspace({onLogout}:{onLogout:()=>void}){
 
       {tab==='reviews'&&<section className="card full">
         <div className="card-head"><div><h2>{monthLabel(activeMonth)} flags</h2><p className="muted">Review the mandatory RM30k threshold and any optional behavioural flags. Historical information is context only; Compliance still makes the final decision.</p></div></div>
-        {!monthFlags.length?<div className="empty-small">No flags for the selected month.</div>:<div className="review-list">{monthFlags.map(f=><ReviewCard key={`${f.id}:${reviews[f.id]?.reviewedAt||''}`} flag={f} review={reviews[f.id]} onSave={saveReview}/>)}</div>}
+        {!monthFlags.length?<div className="empty-small">No flags for the selected month.</div>:<div className="review-list">{monthFlags.map(f=><ReviewCard key={`${f.id}:${reviews[f.id]?.reviewedAt||''}`} flag={f} review={reviews[f.id]} onSave={saveReview} reviewer={user.displayName}/>)}</div>}
       </section>}
 
       {tab==='staff'&&<section className="card full printable" id="staff-report">
@@ -207,11 +210,11 @@ function Workspace({onLogout}:{onLogout:()=>void}){
         {!staff.some(s=>s.active)?<div className="callout">Select staff from the investor dropdown under <strong>Monthly Upload</strong> to enable staff matching.</div>:<><div className="actions"><button onClick={()=>exportRowsToXlsx(`Staff Investment Report - ${activeMonth}.xlsx`,'Staff Investment',staffExport)}>Export Excel</button><button className="secondary" onClick={()=>window.print()}>Print / Save PDF</button></div><div className="table-wrap"><table className="report-table"><thead><tr><th>No.</th><th>Note Reference ID</th><th>Note Name</th><th>Staff Name</th><th>Amount (RM)</th><th>Status</th><th>Date / Time</th></tr></thead><tbody>{staffRows.map((x,i)=><tr key={`${x.transaction.sourceRow}-${i}`}><td>{i+1}</td><td>{x.note?.referenceId||x.transaction.noteId}</td><td className={!x.note?.noteName?'missing':''}>{x.note?.noteName||'Note master required'}</td><td>{x.staff.name}</td><td className="num">{x.transaction.amount.toLocaleString('en-MY',{minimumFractionDigits:2})}</td><td>Successful</td><td>{fmtDate(x.transaction.date)}</td></tr>)}{!staffRows.length&&<tr><td colSpan={7} className="center">No staff investment transactions detected.</td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total staff investment for the month</td><td className="num">{staffRows.reduce((s,x)=>s+x.transaction.amount,0).toLocaleString('en-MY',{minimumFractionDigits:2})}</td><td colSpan={2}></td></tr></tfoot></table></div></>}
       </section>}
 
-      {tab==='rules'&&<RulesEditor key={JSON.stringify(rules)} initial={rules} onSave={saveRules}/>}
+      {tab==='rules'&&<fieldset className="workspace-content" disabled={!canWrite(user.role,'rules')}><RulesEditor key={JSON.stringify(rules)} initial={rules} onSave={saveRules}/></fieldset>}
 
       {tab==='reports'&&<section className="grid2">
         <div className="card"><h2>Monthly Deposit Monitoring Report</h2><p className="muted">Carries forward your earlier flagged-deposit format, now enriched with Investor ID, AML risk, historical average, prior compliance context and review audit fields.</p><div className="report-metrics"><Summary label="Review month" value={monthLabel(activeMonth)}/><Summary label="Flagged investors (TM-001)" value={String(mandatory.length)}/><Summary label="Total flagged amount" value={rm(mandatory.reduce((s,f)=>s+f.amount,0))}/><Summary label="Pending" value={String(mandatory.filter(f=>(reviews[f.id]?.decision||'Pending')==='Pending').length)}/></div><button disabled={!mandatory.length} onClick={()=>exportRowsToXlsx(`Monthly Deposit Monitoring - ${activeMonth}.xlsx`,'Flagged Deposits',reportRows)}>Export Monitoring Excel</button></div>
-        <SignoffForm key={`${activeMonth}:${signoffs[activeMonth]?.updatedAt||''}`} month={activeMonth} saved={signoffs[activeMonth]} onSave={value=>save(async()=>{await persist(`signoff:${activeMonth}`,[value]);setSignoffs(previous=>({...previous,[activeMonth]:value}))})}/>
+        <SignoffForm user={user} key={`${activeMonth}:${signoffs[activeMonth]?.updatedAt||''}`} month={activeMonth} saved={signoffs[activeMonth]} onSave={value=>save(async()=>{await persist(`signoff:${activeMonth}`,[value]);setSignoffs(previous=>({...previous,[activeMonth]:value}))})}/>
 
       </section>}
       </fieldset>
@@ -224,9 +227,9 @@ function RulesEditor({initial,onSave}:{initial:RuleConfig[],onSave:(next:RuleCon
   return <section className="stack"><div className="callout"><strong>TM-001 is mandatory and fixed.</strong> Aggregate deposits must be strictly greater than RM30,000 to trigger it; RM30,000.00 exactly does not trigger TM-001.</div>{rules.map(r=><div className="rule-card" key={r.id}><div><div className="rule-id">{r.id}</div><h3>{r.name}</h3><p>{r.description}</p></div><div className="rule-controls"><label>{r.id==='TM-006'?'Multiple / threshold':'Threshold'}<input type="number" value={r.threshold??0} disabled={r.locked} onChange={e=>setDraft(rules.map(x=>x.id===r.id?{...x,threshold:Number(e.target.value)}:x))}/></label><label className="switch-row"><input type="checkbox" checked={r.enabled} disabled={r.locked} onChange={e=>setDraft(rules.map(x=>x.id===r.id?{...x,enabled:e.target.checked}:x))}/>{r.locked?'Mandatory':'Enabled'}</label></div></div>)}<button onClick={()=>onSave(rules)}>Save Rules</button></section>
 }
 
-function SignoffForm({month,saved,onSave}:{month:string,saved?:Signoff,onSave:(value:Signoff)=>void}){
-  const [reviewedBy,setReviewedBy]=useState(saved?.reviewedBy||''),[designation,setDesignation]=useState(saved?.designation||''),[comments,setComments]=useState(saved?.comments||''),[status,setStatus]=useState<Signoff['status']>(saved?.status||'Pending')
-  return <form className="card" onSubmit={e=>{e.preventDefault();onSave({month,reviewedBy,designation,comments,status,updatedAt:new Date().toISOString()})}}><h2>Compliance Sign-Off</h2><p className="muted">Save the conclusion for {month?monthLabel(month):'the selected month'}. Sign-off records a review; it does not lock further edits.</p><div className="signoff"><label>Reviewed by<input required value={reviewedBy} onChange={e=>setReviewedBy(e.target.value)}/></label><label>Designation<input required value={designation} onChange={e=>setDesignation(e.target.value)}/></label><label>Review comments<textarea rows={4} value={comments} onChange={e=>setComments(e.target.value)}/></label><label>Status<select value={status} onChange={e=>setStatus(e.target.value as Signoff['status'])}><option>Pending</option><option>Completed</option></select></label></div>{saved&&<p className="muted">Saved {new Date(saved.updatedAt).toLocaleString()}</p>}<div className="actions"><button disabled={!month}>Save Sign-Off</button><button type="button" className="secondary" onClick={()=>window.print()}>Print Sign-Off</button></div></form>
+function SignoffForm({month,saved,onSave,user}:{month:string,saved?:Signoff,onSave:(value:Signoff)=>void,user:User}){
+  const [reviewedBy]=useState(user.displayName),[designation,setDesignation]=useState(saved?.designation||''),[comments,setComments]=useState(saved?.comments||''),[status,setStatus]=useState<Signoff['status']>(saved?.status||'Pending')
+  return <form className="card" onSubmit={e=>{e.preventDefault();onSave({month,reviewedBy,designation,comments,status,updatedAt:new Date().toISOString()})}}><h2>Compliance Sign-Off</h2><p className="muted">Save the conclusion for {month?monthLabel(month):'the selected month'}. Sign-off records a review; it does not lock further edits.</p><div className="signoff"><label>Reviewed by<input readOnly value={reviewedBy}/></label><label>Designation<input required value={designation} onChange={e=>setDesignation(e.target.value)}/></label><label>Review comments<textarea rows={4} value={comments} onChange={e=>setComments(e.target.value)}/></label><label>Status<select value={status} onChange={e=>setStatus(e.target.value as Signoff['status'])}><option>Pending</option><option>Completed</option></select></label></div>{saved&&<p className="muted">Saved {new Date(saved.updatedAt).toLocaleString()}</p>}<div className="actions"><button disabled={!month||!canWrite(user.role,`signoff:${month}`)}>Save Sign-Off</button><button type="button" className="secondary" onClick={()=>window.print()}>Print Sign-Off</button></div></form>
 }
 
 function StaffRegister({investors,staff,onChange}:{investors:string[],staff:StaffMember[],onChange:(next:StaffMember[])=>void}) {
@@ -261,8 +264,8 @@ function StatusBadge({value}:{value:string}){return <span className={`badge ${va
 function RiskBadge({value}:{value?:string}){const v=value||'Unknown';return <span className={`badge risk-${v.toLowerCase()}`}>{v}</span>}
 function EmptyUpload({onFile,busy}:{onFile:(f?:File)=>void,busy:boolean}){return <div className="hero-empty"><div className="upload-icon">⇧</div><h2>Upload the monthly Cofundr transaction log</h2><p>The mandatory RM30,000 aggregate monthly deposit rule will run automatically.</p><label className="button">{busy?'Reading file…':'Choose Excel / CSV'}<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={e=>onFile(e.target.files?.[0])}/></label></div>}
 function UploadCard({title,text,accept,onFile,detail}:{title:string,text:string,accept:string,onFile:(f?:File)=>void,detail:string}){return <div className="upload-card"><div><h2>{title}</h2><p>{text}</p><small>{detail}</small></div><label className="button secondary">Choose file<input type="file" accept={accept} hidden onChange={e=>onFile(e.target.files?.[0])}/></label></div>}
-function ReviewCard({flag,review,onSave}:{flag:Flag,review?:ReviewRecord,onSave:(f:Flag,d:ReviewDecision,c:string,r:string)=>void}){
-  const [decision,setDecision]=useState<ReviewDecision>(review?.decision||'Pending');const [comments,setComments]=useState(review?.comments||'');const [by,setBy]=useState(review?.reviewedBy||'')
-  return <article className="review-card"><div className="review-main"><div className="rule-line"><span className={`severity ${flag.severity.toLowerCase()}`}>{flag.severity}</span><strong>{flag.ruleId} · {flag.ruleName}</strong></div><h3>{flag.investorName}</h3><div className="review-amount">{rm(flag.amount)}</div><p>{flag.reason}</p><div className="context-grid"><Context label="Investor ID" value={flag.investorId||'Not matched'}/><Context label="AML Risk" value={flag.riskProfile||'Not loaded'}/><Context label="Historical Avg Deposit" value={flag.historicalAverageDeposit?rm(flag.historicalAverageDeposit):'No history'}/><Context label="Historical Max Deposit" value={flag.historicalMaxDeposit?rm(flag.historicalMaxDeposit):'No history'}/></div>{flag.priorComplianceContext&&<div className="prior-context"><strong>Prior Compliance Context</strong><span>{flag.priorComplianceContext}</span></div>}<small>Source row(s): {flag.transactionRows.join(', ')} · Transactions: {flag.transactionCount}</small></div><div className="review-form"><label>Decision<select value={decision} onChange={e=>setDecision(e.target.value as ReviewDecision)}><option>Pending</option><option>Cleared</option><option>Request Information</option><option>Escalated</option></select></label><label>Reviewed by<input value={by} onChange={e=>setBy(e.target.value)} placeholder="Name"/></label><label>Compliance comments<textarea rows={4} value={comments} onChange={e=>setComments(e.target.value)} placeholder="Reason for decision / follow-up"/></label><button onClick={()=>onSave(flag,decision,comments,by)}>Save Review</button></div></article>
+function ReviewCard({flag,review,onSave,reviewer}:{flag:Flag,review?:ReviewRecord,reviewer:string,onSave:(f:Flag,d:ReviewDecision,c:string,r:string)=>void}){
+  const [decision,setDecision]=useState<ReviewDecision>(review?.decision||'Pending');const [comments,setComments]=useState(review?.comments||'');const by=reviewer
+  return <article className="review-card"><div className="review-main"><div className="rule-line"><span className={`severity ${flag.severity.toLowerCase()}`}>{flag.severity}</span><strong>{flag.ruleId} · {flag.ruleName}</strong></div><h3>{flag.investorName}</h3><div className="review-amount">{rm(flag.amount)}</div><p>{flag.reason}</p><div className="context-grid"><Context label="Investor ID" value={flag.investorId||'Not matched'}/><Context label="AML Risk" value={flag.riskProfile||'Not loaded'}/><Context label="Historical Avg Deposit" value={flag.historicalAverageDeposit?rm(flag.historicalAverageDeposit):'No history'}/><Context label="Historical Max Deposit" value={flag.historicalMaxDeposit?rm(flag.historicalMaxDeposit):'No history'}/></div>{flag.priorComplianceContext&&<div className="prior-context"><strong>Prior Compliance Context</strong><span>{flag.priorComplianceContext}</span></div>}<small>Source row(s): {flag.transactionRows.join(', ')} · Transactions: {flag.transactionCount}</small></div><div className="review-form"><label>Decision<select value={decision} onChange={e=>setDecision(e.target.value as ReviewDecision)}><option>Pending</option><option>Cleared</option><option>Request Information</option><option>Escalated</option></select></label><label>Reviewed by<input value={by} readOnly/></label><label>Compliance comments<textarea rows={4} value={comments} onChange={e=>setComments(e.target.value)} placeholder="Reason for decision / follow-up"/></label><button onClick={()=>onSave(flag,decision,comments,by)}>Save Review</button></div></article>
 }
 function Context({label,value}:{label:string,value:string}){return <div><span>{label}</span><strong>{value}</strong></div>}
