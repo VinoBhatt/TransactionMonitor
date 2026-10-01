@@ -1,0 +1,4 @@
+#,Note ID,Name,User Type,Bank,Account No,Amount(MYR),Transaction No,Transaction Proof,Date,Pay Via,Action
+1,0,Sample Investor A,Investor,Sample Bank,10001,20000,,,05-Sep-2026 10:00:00,FPX,Deposit
+2,0,Sample Investor A,Investor,Sample Bank,10001,15000,,,15-Sep-2026 11:00:00,FPX,Deposit
+3,2101,Sample Staff Member,Investor,Sample Bank,20001,1000,,,16-Sep-2026 12:00:00,,Investment Committed

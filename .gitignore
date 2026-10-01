@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.wrangler/
+*.tsbuildinfo
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+*.log
+.DS_Store
+# Do not commit real transaction exports / staff data
+private-data/
