@@ -1,12 +1,28 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "transactionmonitor",
+  "main": "worker/index.ts",
   "compatibility_date": "2026-10-01",
   "build": {
     "command": "npm run build"
   },
   "assets": {
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/api/*"
+    ],
     "directory": "./dist",
     "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "transactionmonitor-db",
+      "migrations_dir": "migrations",
+      "database_id": "e7799d1e-34e6-45c4-b670-85514980de26"
+    }
+  ],
+  "observability": {
+    "enabled": true
   }
 }

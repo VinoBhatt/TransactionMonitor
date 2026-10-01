@@ -1,6 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ApiError, readDataset, request, writeDataset } from './api'
+import type { Dataset } from './api'
+import { Login } from './Login'
+import type { Signoff } from '../shared/schema'
 import type { Flag, HistoricalInvestor, NoteMasterRow, PriorComplianceContext, ReviewDecision, ReviewRecord, RuleConfig, StaffMember, Transaction } from './types'
-import { exportRowsToXlsx, monthKey, monthLabel, parseGenericTable, parseHistoricalWorkbook, parseNoteMaster, parsePriorMonitoringWorkbook, parseStaffRows, parseWorkbook, runRules, staffInvestments } from './monitoring'
+import { exportRowsToXlsx, monthKey, monthLabel, parseGenericTable, parseHistoricalWorkbook, parseNoteMaster, parsePriorMonitoringWorkbook, normalizeName, parseWorkbook, runRules, staffInvestments } from './monitoring'
 
 type Tab = 'dashboard'|'upload'|'reviews'|'staff'|'rules'|'reports'
 
@@ -16,36 +20,74 @@ const defaultRules: RuleConfig[] = [
 const rm = (n:number) => `RM ${n.toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2})}`
 const fmtDate = (d:Date|null) => d ? new Intl.DateTimeFormat('en-MY',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d) : '—'
 
-function loadReviews(): Record<string,ReviewRecord> { try { return JSON.parse(localStorage.getItem('cofundr-tm-reviews') || '{}') } catch { return {} } }
-function loadRules(): RuleConfig[] {
-  try {
-    const saved = JSON.parse(localStorage.getItem('cofundr-tm-rules') || 'null') as RuleConfig[] | null
-    if (!saved) return defaultRules
-    return defaultRules.map(d => {
-      const s = saved.find(x=>x.id===d.id)
-      return {...d,...(s||{}),enabled:d.locked?true:(s?.enabled ?? d.enabled),threshold:d.locked?30000:(s?.threshold ?? d.threshold)}
-    })
-  } catch { return defaultRules }
-}
-function loadStaff(): StaffMember[] { try{return JSON.parse(localStorage.getItem('cofundr-tm-staff')||'[]')}catch{return []} }
-function loadNotes(): NoteMasterRow[] { try{return JSON.parse(localStorage.getItem('cofundr-tm-notes')||'[]')}catch{return []} }
-function loadContext(): PriorComplianceContext[] { try{return JSON.parse(localStorage.getItem('cofundr-tm-context')||'[]')}catch{return []} }
-
 export default function App(){
+  const [session,setSession]=useState<'loading'|'signed-in'|'signed-out'>('loading')
+  const [error,setError]=useState('')
+  useEffect(()=>{request('/datasets').then(()=>setSession('signed-in')).catch(e=>{
+    if(e instanceof ApiError && e.status===401)setSession('signed-out')
+    else setError(e.message)
+  })},[])
+  if(session==='signed-out')return <Login onLogin={()=>setSession('signed-in')}/>
+  if(session==='loading')return <main className="login-page"><div className="card"><h2>{error?'Workspace unavailable':'Opening workspace?'}</h2>{error&&<><p role="alert">{error}</p><button onClick={()=>window.location.reload()}>Retry</button></>}</div></main>
+  return <Workspace onLogout={()=>setSession('signed-out')}/>
+}
+
+function Workspace({onLogout}:{onLogout:()=>void}){
   const [tab,setTab]=useState<Tab>('dashboard')
   const [transactions,setTransactions]=useState<Transaction[]>([])
   const [sourceName,setSourceName]=useState('')
   const [historyName,setHistoryName]=useState('')
   const [priorName,setPriorName]=useState('')
-  const [rules,setRules]=useState<RuleConfig[]>(loadRules)
-  const [reviews,setReviews]=useState<Record<string,ReviewRecord>>(loadReviews)
-  const [staff,setStaff]=useState<StaffMember[]>(loadStaff)
-  const [notes,setNotes]=useState<NoteMasterRow[]>(loadNotes)
+  const [rules,setRules]=useState<RuleConfig[]>(defaultRules)
+  const [reviews,setReviews]=useState<Record<string,ReviewRecord>>({})
+  const [staff,setStaff]=useState<StaffMember[]>([])
+  const [notes,setNotes]=useState<NoteMasterRow[]>([])
   const [history,setHistory]=useState<HistoricalInvestor[]>([])
-  const [priorContext,setPriorContext]=useState<PriorComplianceContext[]>(loadContext)
+  const [priorContext,setPriorContext]=useState<PriorComplianceContext[]>([])
   const [filterMonth,setFilterMonth]=useState('')
   const [busy,setBusy]=useState(false)
   const [message,setMessage]=useState('')
+  const [ready,setReady]=useState(false)
+  const [signoffs,setSignoffs]=useState<Record<string,Signoff>>({})
+  const versions=useRef<Record<string,string>>({})
+  const saving=useRef(false)
+  async function reload(){
+    setReady(false)
+    try{
+      const datasets=await request<Dataset[]>('/datasets')
+      const values:Record<string,unknown[]>={}
+      // Sequential pages keep large workbook imports within request limits.
+      for(const dataset of datasets)values[dataset.name]=await readDataset(dataset)
+      versions.current=Object.fromEntries(datasets.map(d=>[d.name,d.version]))
+      const tx=Object.entries(values).filter(([key])=>key.startsWith('transactions:')).flatMap(([,rows])=>rows) as (Omit<Transaction,'date'>&{date:string|null})[]
+      setTransactions(tx.map(t=>({...t,date:t.date?new Date(t.date):null})))
+      setStaff((values.staff||[]) as StaffMember[]);setNotes((values.notes||[]) as NoteMasterRow[])
+      setHistory((values.history||[]) as HistoricalInvestor[]);setPriorContext((values.context||[]) as PriorComplianceContext[])
+      const storedRules=(values.rules||[]) as RuleConfig[]
+      setRules(defaultRules.map(r=>r.locked?r:{...r,...storedRules.find(x=>x.id===r.id)}))
+      setReviews(Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('review:')).flatMap(([,rows])=>(rows as ReviewRecord[]).map(r=>[r.flagId,r]))))
+      setSignoffs(Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('signoff:')).flatMap(([,rows])=>(rows as Signoff[]).map(r=>[r.month,r]))))
+      setSourceName(datasets.filter(d=>d.name.startsWith('transactions:')).map(d=>d.source).filter((s,i,a)=>a.indexOf(s)===i).join(', '))
+      setHistoryName(datasets.find(d=>d.name==='history')?.source||'');setPriorName(datasets.find(d=>d.name==='context')?.source||'')
+      setReady(true)
+    }catch(e){handleError(e)}
+  }
+  function handleError(e:unknown){
+    if(e instanceof ApiError && e.status===401){onLogout();return}
+    setMessage(e instanceof Error?e.message:'Could not save changes.')
+  }
+  useEffect(()=>{void reload()},[])
+  async function persist(dataset:string,items:unknown[],source=''){
+    const result=await writeDataset(dataset,versions.current[dataset]||'',items,source)
+    versions.current[dataset]=result.version
+  }
+  async function save(action:()=>Promise<void>){
+    if(saving.current)return
+    saving.current=true;setBusy(true);setMessage('Saving changes?')
+    try{await action();setMessage('Changes saved.')}catch(e){handleError(e)}
+    finally{saving.current=false;setBusy(false)}
+  }
+
 
   const flags=useMemo(()=>runRules(transactions,rules,history,priorContext),[transactions,rules,history,priorContext])
   const months=useMemo(()=>Array.from(new Set(transactions.map(t=>monthKey(t.date)).filter(x=>x!=='Unknown'))).sort().reverse(),[transactions])
@@ -53,28 +95,57 @@ export default function App(){
   const monthTx=useMemo(()=>transactions.filter(t=>monthKey(t.date)===activeMonth),[transactions,activeMonth])
   const monthFlags=useMemo(()=>flags.filter(f=>f.monthKey===activeMonth),[flags,activeMonth])
   const staffRows=useMemo(()=>staffInvestments(monthTx,staff,notes),[monthTx,staff,notes])
+  const investors=useMemo(()=>{
+    const names = new Map<string, string>()
+    for (const investor of [...history, ...transactions]) {
+      const name = investor.name.trim()
+      const key = normalizeName(name)
+      if (key && !names.has(key)) names.set(key, name)
+    }
+    return [...names.values()].sort((a,b)=>a.localeCompare(b))
+  },[history,transactions])
   const deposits=monthTx.filter(t=>t.action.trim().toLowerCase()==='deposit')
   const totalDeposit=deposits.reduce((s,t)=>s+t.amount,0)
   const pending=monthFlags.filter(f=>(reviews[f.id]?.decision||'Pending')==='Pending').length
   const mandatory=monthFlags.filter(f=>f.ruleId==='TM-001')
   const highRiskMandatory=mandatory.filter(f=>f.riskProfile?.toLowerCase()==='high').length
 
-  const saveRules=(next:RuleConfig[])=>{setRules(next);localStorage.setItem('cofundr-tm-rules',JSON.stringify(next))}
-  const saveReview=(flag:Flag, decision:ReviewDecision, comments:string, reviewedBy:string)=>{
-    const next={...reviews,[flag.id]:{flagId:flag.id,decision,comments,reviewedBy,reviewedAt:new Date().toISOString()}}
-    setReviews(next);localStorage.setItem('cofundr-tm-reviews',JSON.stringify(next))
-  }
-
+  const saveRules=(next:RuleConfig[])=>save(async()=>{await persist('rules',next);setRules(next)})
+  const saveReview=(flag:Flag,decision:ReviewDecision,comments:string,reviewedBy:string)=>save(async()=>{
+    const review={flagId:flag.id,decision,comments,reviewedBy,reviewedAt:new Date().toISOString()}
+    await persist(`review:${flag.id}`,[review]);setReviews(previous=>({...previous,[flag.id]:review}))
+  })
+  const saveStaff=(next:StaffMember[])=>save(async()=>{await persist('staff',next);setStaff(next)})
   async function uploadTransactions(file?:File){
-    if(!file)return; setBusy(true);setMessage('')
-    try{const rows=await parseWorkbook(file);setTransactions(rows);setSourceName(file.name);setFilterMonth('');setMessage(`${rows.length.toLocaleString()} transactions loaded.`);setTab('dashboard')}
-    catch(e){setMessage(e instanceof Error?e.message:'Could not read transaction file.')}
-    finally{setBusy(false)}
+    if(!file)return
+    await save(async()=>{
+      const rows=await parseWorkbook(file)
+      if(!rows.length)throw new Error('No transactions found in this file.')
+      if(rows.some(t=>!t.date))throw new Error('Some transactions have invalid dates. Correct the file before importing.')
+      const groups=new Map<string,Transaction[]>()
+      for(const row of rows){const month=monthKey(row.date);if(!groups.has(month))groups.set(month,[]);groups.get(month)!.push(row)}
+      for(const [month,items] of groups){
+        await persist(`transactions:${month}`,items,file.name)
+        setTransactions(previous=>[...previous.filter(t=>monthKey(t.date)!==month),...items])
+        setReviews(previous=>Object.fromEntries(Object.entries(previous).filter(([key])=>!key.startsWith(`${month}|`))))
+        setSignoffs(previous=>Object.fromEntries(Object.entries(previous).filter(([key])=>key!==month)))
+        for(const key of Object.keys(versions.current)){if(key.startsWith(`review:${month}|`)||key===`signoff:${month}`)delete versions.current[key]}
+      }
+      setSourceName(file.name);setFilterMonth('');setTab('dashboard')
+    })
   }
-  async function uploadStaff(file?:File){if(!file)return;try{const x=parseStaffRows(await parseGenericTable(file));setStaff(x);localStorage.setItem('cofundr-tm-staff',JSON.stringify(x));setMessage(`${x.length} staff records loaded.`)}catch(e){setMessage(e instanceof Error?e.message:'Could not read staff register.')}}
-  async function uploadNotes(file?:File){if(!file)return;try{const x=parseNoteMaster(await parseGenericTable(file));setNotes(x);localStorage.setItem('cofundr-tm-notes',JSON.stringify(x));setMessage(`${x.length} note-master rows loaded.`)}catch(e){setMessage(e instanceof Error?e.message:'Could not read note master.')}}
-  async function uploadHistory(file?:File){if(!file)return;try{const x=await parseHistoricalWorkbook(file);setHistory(x);setHistoryName(file.name);setMessage(`${x.length} historical investor profiles loaded from the working workbook.`)}catch(e){setMessage(e instanceof Error?e.message:'Could not read historical workbook.')}}
-  async function uploadPrior(file?:File){if(!file)return;try{const x=await parsePriorMonitoringWorkbook(file);setPriorContext(x);setPriorName(file.name);localStorage.setItem('cofundr-tm-context',JSON.stringify(x));setMessage(`${x.length} prior compliance comments carried forward.`)}catch(e){setMessage(e instanceof Error?e.message:'Could not read prior monitoring workbook.')}}
+  async function uploadNotes(file?:File){if(file)await save(async()=>{
+    const rows=parseNoteMaster(await parseGenericTable(file));if(!rows.length)throw new Error('No note records found.')
+    await persist('notes',rows,file.name);setNotes(rows)
+  })}
+  async function uploadHistory(file?:File){if(file)await save(async()=>{
+    const rows=await parseHistoricalWorkbook(file);if(!rows.length)throw new Error('No investor profiles found.')
+    await persist('history',rows,file.name);setHistory(rows);setHistoryName(file.name)
+  })}
+  async function uploadPrior(file?:File){if(file)await save(async()=>{
+    const rows=await parsePriorMonitoringWorkbook(file);if(!rows.length)throw new Error('No compliance comments found.')
+    await persist('context',rows,file.name);setPriorContext(rows);setPriorName(file.name)
+  })}
 
   const staffExport=staffRows.map((x,i)=>({
     'No.':i+1,'Note Reference ID':x.note?.referenceId||x.transaction.noteId,'Note Name':x.note?.noteName||'Note master required','Staff Name':x.staff.name,'Amount (RM)':x.transaction.amount,'Status':'Successful','Date / Time':fmtDate(x.transaction.date)
@@ -98,8 +169,11 @@ export default function App(){
     </aside>
 
     <main>
+      <div className="workspace-toolbar"><span className="badge cleared">Shared workspace</span><div><button className="secondary" disabled={busy} onClick={()=>void reload()}>Refresh</button><button className="secondary" disabled={busy} onClick={()=>void request('/logout','POST',{}).then(onLogout).catch(handleError)}>Sign out</button></div></div>
       <header className="topbar"><div><h1>{tabTitle(tab)}</h1><p>{sourceName?`Source: ${sourceName}`:'No monthly transaction file loaded'}</p></div>{months.length>0&&<select value={activeMonth} onChange={e=>setFilterMonth(e.target.value)}>{months.map(m=><option key={m} value={m}>{monthLabel(m)}</option>)}</select>}</header>
-      {message&&<div className="notice">{message}</div>}
+      {message&&<div className="notice" role="status">{message}</div>}
+      {!ready&&<div className="notice">Loading saved records? If loading fails, use Refresh to retry.</div>}
+      <fieldset className="workspace-content" disabled={busy||!ready}>
 
       {tab==='dashboard'&&<>{!transactions.length?<EmptyUpload onFile={uploadTransactions} busy={busy}/>:<>
         <section className="kpis">
@@ -118,28 +192,65 @@ export default function App(){
         <UploadCard title="1. Monthly Transaction Log" text="Upload the Cofundr Admin Panel Excel/CSV export for the month being reviewed." accept=".xlsx,.xls,.csv" onFile={uploadTransactions} detail={sourceName||'Required each month'} />
         <UploadCard title="2. Historical Investor / AML Workbook" text="Upload your 2024–2026 ACTIVE INVESTORS & ISSUERS working file. The app reads Monthly Deposit, Monthly Investment, Monthly Gross Withdrawal, Risk Profile and Account Balances sheets to provide investor history and AML context." accept=".xlsx,.xls" onFile={uploadHistory} detail={historyName||'Recommended for historical comparison'} />
         <UploadCard title="3. Prior Monitoring Workbook" text="Upload an earlier Flagged Transaction Monitoring workbook to carry forward standing Compliance Comments such as known relationships or institutional-fund context." accept=".xlsx,.xls" onFile={uploadPrior} detail={priorName||`${priorContext.length} saved context record(s)`} />
-        <UploadCard title="4. Staff Register" text="Used to match Investment Committed transactions to staff for Appendix II." accept=".xlsx,.xls,.csv" onFile={uploadStaff} detail={staff.length?`${staff.length} records stored locally`:'Required for staff report'} />
-        <UploadCard title="5. Note Master" text="Maps Note ID to Note Reference ID and Note Name for the Staff Investment Report." accept=".xlsx,.xls,.csv" onFile={uploadNotes} detail={notes.length?`${notes.length} notes stored locally`:'Awaiting note master'} />
-        <div className="privacy"><strong>Local-first.</strong> The transaction and historical workbooks stay in browser memory for the current session. Staff, note-master and prior-context reference records are stored in browser localStorage. No backend upload is performed by this prototype.</div>
+        <StaffRegister investors={investors} staff={staff} onChange={saveStaff} />
+        <UploadCard title="5. Note Master" text="Maps Note ID to Note Reference ID and Note Name for the Staff Investment Report." accept=".xlsx,.xls,.csv" onFile={uploadNotes} detail={notes.length?`${notes.length} notes saved`:'Awaiting note master'} />
+        <div className="privacy"><strong>Shared records.</strong> Imported records and review decisions are saved to your workspace. Original spreadsheets are not stored. Reimporting a month replaces its transactions; other months are kept. Reimporting a month resets its review decisions and sign-off so corrected transactions are reviewed again.</div>
       </section>}
 
       {tab==='reviews'&&<section className="card full">
         <div className="card-head"><div><h2>{monthLabel(activeMonth)} flags</h2><p className="muted">Review the mandatory RM30k threshold and any optional behavioural flags. Historical information is context only; Compliance still makes the final decision.</p></div></div>
-        {!monthFlags.length?<div className="empty-small">No flags for the selected month.</div>:<div className="review-list">{monthFlags.map(f=><ReviewCard key={f.id} flag={f} review={reviews[f.id]} onSave={saveReview}/>)}</div>}
+        {!monthFlags.length?<div className="empty-small">No flags for the selected month.</div>:<div className="review-list">{monthFlags.map(f=><ReviewCard key={`${f.id}:${reviews[f.id]?.reviewedAt||''}`} flag={f} review={reviews[f.id]} onSave={saveReview}/>)}</div>}
       </section>}
 
       {tab==='staff'&&<section className="card full printable" id="staff-report">
         <div className="report-title"><span>Appendix II – Staff Investment Report</span><h2>STAFF INVESTMENT REPORT – {activeMonth?monthLabel(activeMonth).toUpperCase():'[MONTH] [YEAR]'}</h2><p>Consolidated report generated by the Compliance Unit from the platform pursuant to Clause 7.1.3 and tabled at the monthly Senior Management Team meeting for review of possible conflicts of interest.</p></div>
-        {!staff.length?<div className="callout">Upload the Staff Register under <strong>Monthly Upload</strong> to enable staff matching.</div>:<><div className="actions"><button onClick={()=>exportRowsToXlsx(`Staff Investment Report - ${activeMonth}.xlsx`,'Staff Investment',staffExport)}>Export Excel</button><button className="secondary" onClick={()=>window.print()}>Print / Save PDF</button></div><div className="table-wrap"><table className="report-table"><thead><tr><th>No.</th><th>Note Reference ID</th><th>Note Name</th><th>Staff Name</th><th>Amount (RM)</th><th>Status</th><th>Date / Time</th></tr></thead><tbody>{staffRows.map((x,i)=><tr key={`${x.transaction.sourceRow}-${i}`}><td>{i+1}</td><td>{x.note?.referenceId||x.transaction.noteId}</td><td className={!x.note?.noteName?'missing':''}>{x.note?.noteName||'Note master required'}</td><td>{x.staff.name}</td><td className="num">{x.transaction.amount.toLocaleString('en-MY',{minimumFractionDigits:2})}</td><td>Successful</td><td>{fmtDate(x.transaction.date)}</td></tr>)}{!staffRows.length&&<tr><td colSpan={7} className="center">No staff investment transactions detected.</td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total staff investment for the month</td><td className="num">{staffRows.reduce((s,x)=>s+x.transaction.amount,0).toLocaleString('en-MY',{minimumFractionDigits:2})}</td><td colSpan={2}></td></tr></tfoot></table></div></>}
+        {!staff.some(s=>s.active)?<div className="callout">Select staff from the investor dropdown under <strong>Monthly Upload</strong> to enable staff matching.</div>:<><div className="actions"><button onClick={()=>exportRowsToXlsx(`Staff Investment Report - ${activeMonth}.xlsx`,'Staff Investment',staffExport)}>Export Excel</button><button className="secondary" onClick={()=>window.print()}>Print / Save PDF</button></div><div className="table-wrap"><table className="report-table"><thead><tr><th>No.</th><th>Note Reference ID</th><th>Note Name</th><th>Staff Name</th><th>Amount (RM)</th><th>Status</th><th>Date / Time</th></tr></thead><tbody>{staffRows.map((x,i)=><tr key={`${x.transaction.sourceRow}-${i}`}><td>{i+1}</td><td>{x.note?.referenceId||x.transaction.noteId}</td><td className={!x.note?.noteName?'missing':''}>{x.note?.noteName||'Note master required'}</td><td>{x.staff.name}</td><td className="num">{x.transaction.amount.toLocaleString('en-MY',{minimumFractionDigits:2})}</td><td>Successful</td><td>{fmtDate(x.transaction.date)}</td></tr>)}{!staffRows.length&&<tr><td colSpan={7} className="center">No staff investment transactions detected.</td></tr>}</tbody><tfoot><tr><td colSpan={4}>Total staff investment for the month</td><td className="num">{staffRows.reduce((s,x)=>s+x.transaction.amount,0).toLocaleString('en-MY',{minimumFractionDigits:2})}</td><td colSpan={2}></td></tr></tfoot></table></div></>}
       </section>}
 
-      {tab==='rules'&&<section className="stack"><div className="callout"><strong>TM-001 is mandatory and fixed.</strong> Aggregate deposits must be strictly greater than RM30,000 to trigger it; RM30,000.00 exactly does not trigger TM-001.</div>{rules.map(r=><div className="rule-card" key={r.id}><div><div className="rule-id">{r.id}</div><h3>{r.name}</h3><p>{r.description}</p></div><div className="rule-controls"><label>{r.id==='TM-006'?'Multiple / threshold':'Threshold'}<input type="number" value={r.threshold??0} disabled={r.locked} onChange={e=>saveRules(rules.map(x=>x.id===r.id?{...x,threshold:Number(e.target.value)}:x))}/></label><label className="switch-row"><input type="checkbox" checked={r.enabled} disabled={r.locked} onChange={e=>saveRules(rules.map(x=>x.id===r.id?{...x,enabled:e.target.checked}:x))}/>{r.locked?'Mandatory':'Enabled'}</label></div></div>)}</section>}
+      {tab==='rules'&&<RulesEditor key={JSON.stringify(rules)} initial={rules} onSave={saveRules}/>}
 
       {tab==='reports'&&<section className="grid2">
         <div className="card"><h2>Monthly Deposit Monitoring Report</h2><p className="muted">Carries forward your earlier flagged-deposit format, now enriched with Investor ID, AML risk, historical average, prior compliance context and review audit fields.</p><div className="report-metrics"><Summary label="Review month" value={monthLabel(activeMonth)}/><Summary label="Flagged investors (TM-001)" value={String(mandatory.length)}/><Summary label="Total flagged amount" value={rm(mandatory.reduce((s,f)=>s+f.amount,0))}/><Summary label="Pending" value={String(mandatory.filter(f=>(reviews[f.id]?.decision||'Pending')==='Pending').length)}/></div><button disabled={!mandatory.length} onClick={()=>exportRowsToXlsx(`Monthly Deposit Monitoring - ${activeMonth}.xlsx`,'Flagged Deposits',reportRows)}>Export Monitoring Excel</button></div>
-        <div className="card"><h2>Compliance Sign-Off</h2><p className="muted">Monthly closing control. V1 prints a sign-off summary; true locking should be enforced by authentication/database in production.</p><div className="signoff"><label>Reviewed By<input placeholder="Compliance Officer"/></label><label>Designation<input placeholder="e.g. Compliance Officer"/></label><label>Review Comments<textarea rows={4} placeholder="Overall monthly review conclusion"/></label><label>Status<select><option>Pending</option><option>Completed</option></select></label></div><button className="secondary" onClick={()=>window.print()}>Print Sign-Off</button></div>
+        <SignoffForm key={`${activeMonth}:${signoffs[activeMonth]?.updatedAt||''}`} month={activeMonth} saved={signoffs[activeMonth]} onSave={value=>save(async()=>{await persist(`signoff:${activeMonth}`,[value]);setSignoffs(previous=>({...previous,[activeMonth]:value}))})}/>
+
       </section>}
+      </fieldset>
     </main>
+  </div>
+}
+
+function RulesEditor({initial,onSave}:{initial:RuleConfig[],onSave:(next:RuleConfig[])=>void}){
+  const [rules,setDraft]=useState(initial)
+  return <section className="stack"><div className="callout"><strong>TM-001 is mandatory and fixed.</strong> Aggregate deposits must be strictly greater than RM30,000 to trigger it; RM30,000.00 exactly does not trigger TM-001.</div>{rules.map(r=><div className="rule-card" key={r.id}><div><div className="rule-id">{r.id}</div><h3>{r.name}</h3><p>{r.description}</p></div><div className="rule-controls"><label>{r.id==='TM-006'?'Multiple / threshold':'Threshold'}<input type="number" value={r.threshold??0} disabled={r.locked} onChange={e=>setDraft(rules.map(x=>x.id===r.id?{...x,threshold:Number(e.target.value)}:x))}/></label><label className="switch-row"><input type="checkbox" checked={r.enabled} disabled={r.locked} onChange={e=>setDraft(rules.map(x=>x.id===r.id?{...x,enabled:e.target.checked}:x))}/>{r.locked?'Mandatory':'Enabled'}</label></div></div>)}<button onClick={()=>onSave(rules)}>Save Rules</button></section>
+}
+
+function SignoffForm({month,saved,onSave}:{month:string,saved?:Signoff,onSave:(value:Signoff)=>void}){
+  const [reviewedBy,setReviewedBy]=useState(saved?.reviewedBy||''),[designation,setDesignation]=useState(saved?.designation||''),[comments,setComments]=useState(saved?.comments||''),[status,setStatus]=useState<Signoff['status']>(saved?.status||'Pending')
+  return <form className="card" onSubmit={e=>{e.preventDefault();onSave({month,reviewedBy,designation,comments,status,updatedAt:new Date().toISOString()})}}><h2>Compliance Sign-Off</h2><p className="muted">Save the conclusion for {month?monthLabel(month):'the selected month'}. Sign-off records a review; it does not lock further edits.</p><div className="signoff"><label>Reviewed by<input required value={reviewedBy} onChange={e=>setReviewedBy(e.target.value)}/></label><label>Designation<input required value={designation} onChange={e=>setDesignation(e.target.value)}/></label><label>Review comments<textarea rows={4} value={comments} onChange={e=>setComments(e.target.value)}/></label><label>Status<select value={status} onChange={e=>setStatus(e.target.value as Signoff['status'])}><option>Pending</option><option>Completed</option></select></label></div>{saved&&<p className="muted">Saved {new Date(saved.updatedAt).toLocaleString()}</p>}<div className="actions"><button disabled={!month}>Save Sign-Off</button><button type="button" className="secondary" onClick={()=>window.print()}>Print Sign-Off</button></div></form>
+}
+
+function StaffRegister({investors,staff,onChange}:{investors:string[],staff:StaffMember[],onChange:(next:StaffMember[])=>void}) {
+  const available = investors.filter(name=>!staff.some(s=>s.active && normalizeName(s.name)===normalizeName(name)))
+  function selectStaff(name:string) {
+    if (!available.includes(name)) return
+    const key = normalizeName(name)
+    const existing = staff.find(s=>normalizeName(s.name)===key)
+    onChange(existing
+      ? staff.map(s=>normalizeName(s.name)===key ? {...s,active:true} : s)
+      : [...staff,{id:crypto.randomUUID(),name,active:true}])
+  }
+  return <div className="card stack">
+    <div><h2>4. Staff Register</h2><p className="muted">Select investors who are staff members to include their investments in Appendix II. Your selections are saved to the shared workspace.</p></div>
+    <label>Choose an investor to add as staff
+      <select value="" disabled={!available.length} onChange={e=>selectStaff(e.target.value)}>
+        <option value="">{!investors.length?'Upload transactions or a historical investor workbook first':!available.length?'All loaded investors are already selected':'Select an investor…'}</option>
+        {available.map(name=><option key={normalizeName(name)} value={name}>{name}</option>)}
+      </select>
+    </label>
+    <div className="summary-list">
+      {staff.filter(s=>s.active).map(s=><div className="summary-row" key={s.id}><strong>{s.name}</strong><button className="secondary" aria-label={`Remove ${s.name} from staff`} onClick={()=>onChange(staff.filter(x=>normalizeName(x.name)!==normalizeName(s.name)))}>Remove</button></div>)}
+      {!staff.some(s=>s.active)&&<p className="muted">No staff selected yet. Add each staff member using the dropdown.</p>}
+    </div>
   </div>
 }
 
