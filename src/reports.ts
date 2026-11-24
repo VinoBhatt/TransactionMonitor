@@ -10,6 +10,13 @@ export type MonitoringReportInput = {
   reviews: Record<string, ReviewRecord>
   signoff?: Signoff
   generatedBy: string
+}
+
+export type DepositReportInput = {
+  month: string
+  transactions: Transaction[]
+  flags: Flag[]
+  generatedBy: string
   investorIdFor?: (name: string) => string | undefined
 }
 
@@ -29,6 +36,7 @@ const stamp = (d: Date | null) => d ? new Intl.DateTimeFormat('en-MY', { day: '2
 const safeName = (value: string) => value.replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim() || 'Unnamed'
 
 export const monitoringFileName = (month: string) => `${month} Transaction Monitoring Report.pdf`
+export const depositFileName = (month: string) => `${month} Deposit Report.pdf`
 export const staffFileName = (month: string, staff: StaffMember) => `${month} Staff Investment Report - ${safeName(staff.name)}.pdf`
 
 async function load() {
@@ -155,29 +163,7 @@ export async function monitoringReport(input: MonitoringReportInput) {
     { rightAlign: [5] })
   if (!input.flags.length) y = paragraph(doc, 'Nil.', y - 4) + 4
 
-  // Every deposit in the month, not only the investors above the TM-001 threshold.
-  const depositTotal = deposits.reduce((s, t) => s + t.amount, 0)
-  const flaggedKeys = new Set(mandatory.map(f => f.investorKey))
-  const idFor = (t: Transaction) => mandatory.find(f => f.investorKey === investorKey(t))?.investorId || input.investorIdFor?.(t.name) || '-'
-  const byInvestor = new Map<string, Transaction[]>()
-  for (const t of deposits) byInvestor.set(investorKey(t), [...(byInvestor.get(investorKey(t)) || []), t])
-  const investorRows = [...byInvestor].map(([key, list]) => ({ key, list, total: list.reduce((s, t) => s + t.amount, 0) })).sort((a, b) => b.total - a.total)
-  y = heading(doc, '4. All deposits for the month', y)
-  y = paragraph(doc, `${deposits.length} deposit(s) from ${investorRows.length} investor(s) totalling RM ${amount(depositTotal)}. Investors above RM30,000 are marked under TM-001.`, y + 2) + 1
-  y = heading(doc, '4.1 Deposits by investor', y)
-  y = table(tools, doc, y, ['No.', 'Investor', 'Investor ID', 'Account No.', 'Deposits', 'Total (RM)', 'TM-001'],
-    investorRows.map((r, i) => [i + 1, r.list[0].name, idFor(r.list[0]), r.list[0].accountNo || '-', r.list.length, amount(r.total), flaggedKeys.has(r.key) ? 'Above RM30,000' : '-']),
-    { rightAlign: [4, 5], foot: deposits.length ? ['', 'Total', '', '', deposits.length, amount(depositTotal), ''] : undefined })
-  if (!deposits.length) y = paragraph(doc, 'Nil. No deposits were recorded for this month.', y - 4) + 4
-  if (deposits.length) {
-    y = heading(doc, '4.2 Deposit transactions', y)
-    const sorted = [...deposits].sort((a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0))
-    y = table(tools, doc, y, ['No.', 'Date / Time', 'Investor', 'Investor ID', 'Bank', 'Pay via', 'Transaction No.', 'Amount (RM)'],
-      sorted.map((t, i) => [i + 1, stamp(t.date), t.name, idFor(t), t.bank || '-', t.payVia || '-', t.transactionNo || '-', amount(t.amount)]),
-      { rightAlign: [7], foot: ['', '', 'Total', '', '', '', '', amount(depositTotal)] })
-  }
-
-  y = heading(doc, '5. Compliance sign-off', y)
+  y = heading(doc, '4. Compliance sign-off', y)
   const s = input.signoff
   y = summaryTable(tools, doc, y, [
     ['Sign-off status', s?.status || 'Not signed off'],
@@ -191,6 +177,46 @@ export async function monitoringReport(input: MonitoringReportInput) {
     { role: 'Reviewed by (Chief Compliance Officer)', name: s?.reviewedBy, detail: s?.designation ? `Designation: ${s.designation}` : undefined },
   ])
   footer(doc, `Transaction Monitoring Report · ${label}`)
+  return doc.output('blob')
+}
+
+// Every deposit in the month, not only the investors above the TM-001 threshold.
+export async function depositReport(input: DepositReportInput) {
+  const tools = await load()
+  const doc = new tools.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+  const label = monthLabel(input.month)
+  const deposits = input.transactions.filter(isDeposit)
+  const mandatory = input.flags.filter(f => f.ruleId === 'TM-001')
+  const depositTotal = deposits.reduce((s, t) => s + t.amount, 0)
+  const flaggedKeys = new Set(mandatory.map(f => f.investorKey))
+  const idFor = (t: Transaction) => mandatory.find(f => f.investorKey === investorKey(t))?.investorId || input.investorIdFor?.(t.name) || '-'
+  const byInvestor = new Map<string, Transaction[]>()
+  for (const t of deposits) byInvestor.set(investorKey(t), [...(byInvestor.get(investorKey(t)) || []), t])
+  const investorRows = [...byInvestor].map(([key, list]) => ({ key, list, total: list.reduce((s, t) => s + t.amount, 0) })).sort((a, b) => b.total - a.total)
+
+  let y = header(doc, 'Monthly Deposit Report', `DEPOSIT REPORT - ${label.toUpperCase()}`, input.generatedBy)
+  y = heading(doc, '1. Summary', y + 2)
+  y = summaryTable(tools, doc, y, [
+    ['Review month', label],
+    ['Deposits', `${deposits.length} transaction(s)`],
+    ['Investors depositing', String(investorRows.length)],
+    ['Total deposited', `RM ${amount(depositTotal)}`],
+    ['Investors above RM30,000 (TM-001)', `${mandatory.length} investor(s), RM ${amount(mandatory.reduce((s, f) => s + f.amount, 0))}`],
+  ])
+  y = heading(doc, '2. Deposits by investor', y)
+  y = table(tools, doc, y, ['No.', 'Investor', 'Investor ID', 'Account No.', 'Deposits', 'Total (RM)', 'TM-001'],
+    investorRows.map((row, i) => [i + 1, row.list[0].name, idFor(row.list[0]), row.list[0].accountNo || '-', row.list.length, amount(row.total), flaggedKeys.has(row.key) ? 'Above RM30,000' : '-']),
+    { rightAlign: [4, 5], foot: deposits.length ? ['', 'Total', '', '', deposits.length, amount(depositTotal), ''] : undefined })
+  if (!deposits.length) y = paragraph(doc, 'Nil. No deposits were recorded for this month.', y - 4) + 4
+  if (deposits.length) {
+    y = heading(doc, '3. Deposit transactions', y)
+    const sorted = [...deposits].sort((a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0))
+    y = table(tools, doc, y, ['No.', 'Date / Time', 'Investor', 'Investor ID', 'Bank', 'Pay via', 'Transaction No.', 'Amount (RM)'],
+      sorted.map((t, i) => [i + 1, stamp(t.date), t.name, idFor(t), t.bank || '-', t.payVia || '-', t.transactionNo || '-', amount(t.amount)]),
+      { rightAlign: [7], foot: ['', '', 'Total', '', '', '', '', amount(depositTotal)] })
+  }
+  signatures(doc, y + 4, [{ role: 'Prepared by (Compliance Officer)' }, { role: 'Reviewed by (Chief Compliance Officer)' }])
+  footer(doc, `Deposit Report · ${label}`)
   return doc.output('blob')
 }
 

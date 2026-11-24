@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { request } from './api'
 import type { Signoff } from '../shared/schema'
 import type { Flag, InvestorRecord, NoteMasterRow, ReviewRecord, StaffMember, Transaction } from './types'
-import { investorLookup, monthLabel, staffInvestments } from './monitoring'
-import { downloadBlob, monitoringFileName, monitoringReport, staffFileName, staffReport, zipFiles } from './reports'
+import { investorLookup, isDeposit, monthLabel, staffInvestments } from './monitoring'
+import { depositFileName, depositReport, downloadBlob, monitoringFileName, monitoringReport, staffFileName, staffReport, zipFiles } from './reports'
 
 type Props = {
   month: string
@@ -31,8 +31,10 @@ export function MonthlyReports({ month, transactions, flags, reviews, signoff, s
     finally { setWorking('') }
   }
   // Logged before the file is handed over, so every downloaded report appears in the audit trail.
-  const logReport = (kind: 'monitoring' | 'staff' | 'staff-all', subject?: string) => request('/report-log', 'POST', { kind, month, ...(subject ? { subject } : {}) })
-  const monitoring = () => monitoringReport({ month, transactions, flags, reviews, signoff, generatedBy, investorIdFor: name => byName(name)?.investorId })
+  const logReport = (kind: 'monitoring' | 'deposits' | 'staff' | 'staff-all', subject?: string) => request('/report-log', 'POST', { kind, month, ...(subject ? { subject } : {}) })
+  const monitoring = () => monitoringReport({ month, transactions, flags, reviews, signoff, generatedBy })
+  const deposits = () => depositReport({ month, transactions, flags, generatedBy, investorIdFor: name => byName(name)?.investorId })
+  const depositCount = transactions.filter(isDeposit).length
   const staffPdf = (member: StaffMember) => staffReport({ month, staff: member, transactions, notes, investor: findInvestor(member), generatedBy })
 
   return <section className="card full monthly-reports">
@@ -44,6 +46,11 @@ export function MonthlyReports({ month, transactions, flags, reviews, signoff, s
         <p className="muted">Summary, flags by rule, flagged investors with review decisions, and the compliance sign-off for the month.</p>
         {(pending > 0 || signoff?.status !== 'Completed') && <p className="report-warning">{[pending ? `${pending} flag(s) still pending review` : '', signoff?.status !== 'Completed' ? 'monthly sign-off not completed' : ''].filter(Boolean).join(' · ')}. You can still generate the report, but it will show these as outstanding.</p>}
         <button disabled={!!working} onClick={() => void run('monitoring', async () => { const blob = await monitoring(); await logReport('monitoring'); downloadBlob(blob, monitoringFileName(month)) })}>{working === 'monitoring' ? 'Generating…' : 'Download Monitoring Report (PDF)'}</button>
+      </div>
+      <div className="report-block">
+        <h3>Deposit Report</h3>
+        <p className="muted">Every deposit for the month ({depositCount}), totalled by investor and listed by transaction, with investors above RM30,000 marked.</p>
+        <button disabled={!!working} onClick={() => void run('deposits', async () => { const blob = await deposits(); await logReport('deposits'); downloadBlob(blob, depositFileName(month)) })}>{working === 'deposits' ? 'Generating…' : 'Download Deposit Report (PDF)'}</button>
       </div>
       <div className="report-block">
         <div className="card-head"><h3>Staff Investment Reports</h3>{activeStaff.length > 0 && <button className="secondary" disabled={!!working} onClick={() => void run('all', async () => {

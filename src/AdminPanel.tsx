@@ -4,7 +4,7 @@ import { canViewAudit, roleLabels } from '../shared/auth'
 import type { AuditEvent, ManagedUser, User } from '../shared/auth'
 
 const actionLabels:Record<string,string>={login:'Signed in',save:'Saved data',password_changed:'Changed password',password_reset:'Reset password',account_activated:'Activated account',account_deactivated:'Deactivated account',report_downloaded:'Downloaded report'}
-const reportKinds:Record<string,string>={monitoring:'Transaction Monitoring Report','staff':'Staff Investment Report','staff-all':'All Staff Investment Reports'}
+const reportKinds:Record<string,string>={monitoring:'Transaction Monitoring Report',deposits:'Deposit Report','staff':'Staff Investment Report','staff-all':'All Staff Investment Reports'}
 const reportLabel=(value:string)=>{const [,kind,month,...rest]=value.split(':');return `${reportKinds[kind]||'Report'} · ${month}${rest.length?` · ${rest.join(':')}`:''}`}
 const datasetLabel=(value:string)=>value.startsWith('report:')?reportLabel(value):value.startsWith('transactions:')?`Transactions · ${value.slice(13)}`:value.startsWith('review:')?'Compliance review':value.startsWith('signoff:')?`Monthly sign-off · ${value.slice(8)}`:value.replaceAll('_',' ')
 

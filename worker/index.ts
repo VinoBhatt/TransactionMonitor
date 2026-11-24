@@ -84,7 +84,7 @@ async function api(request:Request,env:Env) {
   if(user.must_change_password)throw new HttpError(403,'Change your temporary password before opening the workspace.')
   if(path==='/api/report-log' && request.method==='POST'){
     // Reports are generated in the browser; this records who produced which report and when.
-    const input=z.object({kind:z.enum(['monitoring','staff','staff-all']),month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),subject:z.string().trim().max(200).optional()}).parse(await body(request))
+    const input=z.object({kind:z.enum(['monitoring','deposits','staff','staff-all']),month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),subject:z.string().trim().max(200).optional()}).parse(await body(request))
     await env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES (?,?,'report_downloaded',?,?)")
       .bind(`report:${input.kind}:${input.month}${input.subject?`:${input.subject}`:''}`,crypto.randomUUID(),new Date().toISOString(),user.id).run()
     return json({ok:true})
