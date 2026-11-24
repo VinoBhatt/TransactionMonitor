@@ -118,6 +118,9 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
   }
 
 
+  const monthlyTab=['dashboard','reviews','staff','reports','upload'].includes(tab)
+  // Success messages fade after a few seconds; errors stay until the next action.
+  useEffect(()=>{if(message!=='Changes saved.')return;const timer=setTimeout(()=>setMessage(m=>m==='Changes saved.'?'':m),5000);return ()=>clearTimeout(timer)},[message])
   const findInvestor=useMemo(()=>investorLookup(directory),[directory])
   const findProfile=useMemo(()=>profileLookup(profiles,findInvestor),[profiles,findInvestor])
   const today=new Date().toISOString().slice(0,10)
@@ -246,9 +249,7 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
   const staffExport=staffRows.map((x,i)=>({
     'No.':i+1,'Note Reference ID':x.note?.referenceId||x.transaction.noteId,'Note Name':x.note?.noteName||'Note master required','Staff Name':x.staff.name,'Amount (RM)':x.transaction.amount,'Status':'Successful','Date / Time':fmtDate(x.transaction.date)
   }))
-  const reportRows=mandatory.map(f=>({
-    'Month':monthLabel(f.monthKey),'Investor ID':f.investorId||'','Name':f.investorName,'Amount (RM)':f.amount,'Risk Profile':f.riskProfile||'','KYC':f.kycStatus||'','Next AML Review':f.amlReviewDue||'','Source of Funds':f.sourceOfFunds||'','Historical Avg Deposit (RM)':f.historicalAverageDeposit||'','Prior Compliance Context':f.priorComplianceContext||'','Remarks':f.reason,'Compliance Decision':reviews[f.id]?.decision||'Pending','Compliance Comments':reviews[f.id]?.comments||'','Reviewed By':reviews[f.id]?.reviewedBy||'','Reviewed At':reviews[f.id]?.reviewedAt||''
-  }))
+
 
   const monthlyReports=<MonthlyReports month={activeMonth} transactions={monthTx} flags={monthFlags} reviews={reviews} signoff={signoffs[activeMonth]} staff={staff} notes={notes} investors={directory} generatedBy={user.displayName}/>
 
@@ -256,24 +257,27 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark">C</div><div><strong>Cofundr</strong><span>Transaction Monitoring</span></div></div>
       <nav>
-        <button className={tab==='dashboard'?'active':''} onClick={()=>setTab('dashboard')}>Dashboard</button>
-        <button className={tab==='upload'?'active':''} onClick={()=>setTab('upload')}>Monthly Upload</button>
-        <button className={tab==='reviews'?'active':''} onClick={()=>setTab('reviews')}>Review Queue {pending>0?`(${pending})`:''}</button>
-        <button className={tab==='staff'?'active':''} onClick={()=>setTab('staff')}>Staff Investment</button>
-        <button className={tab==='rules'?'active':''} onClick={()=>setTab('rules')}>Monitoring Rules</button>
-        <button className={tab==='reports'?'active':''} onClick={()=>setTab('reports')}>Reports & Sign-Off</button>
-        <button className={tab==='aml'?'active':''} onClick={()=>setTab('aml')}>AML Reviews {amlDue>0?`(${amlDue})`:''}</button>
-        <button className={tab==='screening'?'active':''} onClick={()=>setTab('screening')}>Sanctions Screening {screeningPending>0?`(${screeningPending})`:''}</button>
-        {canViewAudit(user.role)&&<button className={tab==='admin'?'active':''} onClick={()=>setTab('admin')}>Administration</button>}
+        <span className="nav-group">Monthly monitoring</span>
+        <NavButton tab="dashboard" current={tab} onSelect={setTab} label="Dashboard"/>
+        <NavButton tab="reviews" current={tab} onSelect={setTab} label="Review Queue" count={pending}/>
+        <NavButton tab="staff" current={tab} onSelect={setTab} label="Staff Investment"/>
+        <NavButton tab="reports" current={tab} onSelect={setTab} label="Reports & Sign-Off"/>
+        <span className="nav-group">Customer due diligence</span>
+        <NavButton tab="aml" current={tab} onSelect={setTab} label="AML Reviews" count={amlDue}/>
+        <NavButton tab="screening" current={tab} onSelect={setTab} label="Sanctions Screening" count={screeningPending}/>
+        <span className="nav-group">Setup</span>
+        <NavButton tab="upload" current={tab} onSelect={setTab} label="Monthly Upload"/>
+        <NavButton tab="rules" current={tab} onSelect={setTab} label="Monitoring Rules"/>
+        {canViewAudit(user.role)&&<NavButton tab="admin" current={tab} onSelect={setTab} label="Administration"/>}
       </nav>
       <div className="sidebar-note"><strong>Mandatory control</strong><span>TM-001 flags aggregate monthly deposits strictly above RM30,000. This control cannot be disabled.</span></div>
     </aside>
 
     <main>
-      <div className="workspace-toolbar"><span className="badge cleared">{user.displayName} | {roleLabels[user.role]}</span><div><button className="secondary" disabled={busy} onClick={onChangePassword}>Change password</button><button className="secondary" disabled={busy} onClick={()=>void reload()}>Refresh</button><button className="secondary" disabled={busy} onClick={()=>void request('/logout','POST',{}).then(onLogout).catch(handleError)}>Sign out</button></div></div>
-      <header className="topbar"><div><h1>{tabTitle(tab)}</h1><p>{sourceName?`Source: ${sourceName}`:'No monthly transaction file loaded'}</p></div>{months.length>0&&<select value={activeMonth} onChange={e=>setFilterMonth(e.target.value)}>{months.map(m=><option key={m} value={m}>{monthLabel(m)}</option>)}</select>}</header>
-      {message&&<div className="notice" role="status">{message}</div>}
-      {summary&&<div className="notice">{summary}</div>}
+      <div className="workspace-toolbar"><span className="user-chip"><span className="avatar">{user.displayName.slice(0,1).toUpperCase()}</span><span><strong>{user.displayName}</strong>{user.displayName!==roleLabels[user.role]&&<small>{roleLabels[user.role]}</small>}</span></span><div><button className="secondary" disabled={busy} onClick={onChangePassword}>Change password</button><button className="secondary" disabled={busy} onClick={()=>void reload()}>Refresh</button><button className="secondary" disabled={busy} onClick={()=>void request('/logout','POST',{}).then(onLogout).catch(handleError)}>Sign out</button></div></div>
+      <header className="topbar"><div><h1>{tabTitle(tab)}</h1><p>{monthlyTab?(sourceName?`Source: ${sourceName}`:'No monthly transaction file loaded'):tabSubtitle(tab)}</p></div>{monthlyTab&&months.length>0&&<label className="month-picker">Review month<select value={activeMonth} onChange={e=>setFilterMonth(e.target.value)}>{months.map(m=><option key={m} value={m}>{monthLabel(m)}</option>)}</select></label>}</header>
+      {message&&<div className={`notice ${noticeTone(message)}`} role="status">{message}</div>}
+      {summary&&<div className="notice success dismissible"><span>{summary}</span><button className="link" aria-label="Dismiss" onClick={()=>setSummary('')}>×</button></div>}
       {!ready&&<div className="notice">Loading saved records… If loading fails, use Refresh to retry.</div>}
       {ready&&loadingMonth&&<div className="notice">Loading {monthLabel(activeMonth)} transactions…</div>}
       <fieldset className="workspace-content" disabled={busy||!ready}>
@@ -293,13 +297,15 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
       </>}</>}
 
       {tab==='upload'&&<section className="stack">
-        <UploadCard title="1. Monthly Transaction Log" text="Upload the Cofundr Admin Panel Excel/CSV export for the month being reviewed." accept=".xlsx,.xls,.csv" onFile={uploadTransactions} detail={sourceName||'Required each month'} />
-        <UploadCard title="2. Historical Investor / AML Workbook" text="Upload your 2024–2026 ACTIVE INVESTORS & ISSUERS working file. The app reads Monthly Deposit, Monthly Investment, Monthly Gross Withdrawal, Risk Profile and Account Balances sheets to provide investor history and AML context." accept=".xlsx,.xls" onFile={uploadHistory} detail={historyName||'Recommended for historical comparison'} />
-        <UploadCard title="3. Prior Monitoring Workbook" text="Upload an earlier Flagged Transaction Monitoring workbook to carry forward standing Compliance Comments such as known relationships or institutional-fund context." accept=".xlsx,.xls" onFile={uploadPrior} detail={priorName||`${priorContext.length} saved context record(s)`} />
+        <h2 className="section-label">Every month</h2>
+        <UploadCard title="1. Monthly Transaction Log" text="Upload the Cofundr Admin Panel Excel/CSV export for the month being reviewed." accept=".xlsx,.xls,.csv" onFile={uploadTransactions} detail={sourceName||'Required each month'} status={months.length?'loaded':'required'} />
+        <h2 className="section-label">Reference data <span>Upload again whenever the source file changes</span></h2>
+        <UploadCard title="2. Historical Investor / AML Workbook" text="Upload your 2024–2026 ACTIVE INVESTORS & ISSUERS working file. The app reads Monthly Deposit, Monthly Investment, Monthly Gross Withdrawal, Risk Profile and Account Balances sheets to provide investor history and AML context." accept=".xlsx,.xls" onFile={uploadHistory} detail={historyName||'Recommended for historical comparison'} status={history.length?'loaded':'missing'} />
+        <UploadCard title="3. Prior Monitoring Workbook" text="Upload an earlier Flagged Transaction Monitoring workbook to carry forward standing Compliance Comments such as known relationships or institutional-fund context." accept=".xlsx,.xls" onFile={uploadPrior} detail={priorName||`${priorContext.length} saved context record(s)`} status={priorContext.length?'loaded':'missing'} />
         <StaffRegister investors={investors} directory={directory} staff={staff} onChange={saveStaff} />
-        <UploadCard title="5. Note Master" text="Upload the Admin Panel note list (or any table with Note ID, Note Reference ID and Note Name). Maps each investment to its note for the Staff Investment Report." accept=".xlsx,.xls,.csv" onFile={uploadNotes} detail={notes.length?`${notes.length} notes saved${notesName?` · ${notesName}`:''}`:'Awaiting note master'} />
-        <UploadCard title="6. Investor Directory" text="Upload the Admin Panel investor list (Investor ID, Investor, Date Registered, Email, Balance, Status). Adds Investor IDs to flags and reports and lists every platform investor in the Staff Register. Contact numbers are not stored." accept=".xlsx,.xls,.csv" onFile={uploadDirectory} detail={directory.length?`${directory.length} investors saved${directoryName?` · ${directoryName}`:''}`:'Recommended'} />
-        <UploadCard title="7. Customer Risk Profiling" text="Upload the Customer Risk Profiling workbook (Retail Investors and Corporate Investors sheets). Adds the current AML risk rating, KYC status, next AML review date, source of funds, occupation, net worth and income to each flag, and drives TM-005. Phone numbers, emails, dates of birth and IC/passport numbers are not stored." accept=".xlsx,.xls" onFile={uploadProfiles} detail={profiles.length?`${profiles.length} profiles saved${profilesName?` · ${profilesName}`:''}`:'Recommended'} />
+        <UploadCard title="5. Note Master" text="Upload the Admin Panel note list (or any table with Note ID, Note Reference ID and Note Name). Maps each investment to its note for the Staff Investment Report." accept=".xlsx,.xls,.csv" onFile={uploadNotes} detail={notes.length?`${notes.length} notes saved${notesName?` · ${notesName}`:''}`:'Awaiting note master'} status={notes.length?'loaded':'missing'} />
+        <UploadCard title="6. Investor Directory" text="Upload the Admin Panel investor list (Investor ID, Investor, Date Registered, Email, Balance, Status). Adds Investor IDs to flags and reports and lists every platform investor in the Staff Register. Contact numbers are not stored." accept=".xlsx,.xls,.csv" onFile={uploadDirectory} detail={directory.length?`${directory.length} investors saved${directoryName?` · ${directoryName}`:''}`:'Recommended'} status={directory.length?'loaded':'missing'} />
+        <UploadCard title="7. Customer Risk Profiling" text="Upload the Customer Risk Profiling workbook (Retail Investors and Corporate Investors sheets). Adds the current AML risk rating, KYC status, next AML review date, source of funds, occupation, net worth and income to each flag, and drives TM-005. Phone numbers, emails, dates of birth and IC/passport numbers are not stored." accept=".xlsx,.xls" onFile={uploadProfiles} detail={profiles.length?`${profiles.length} profiles saved${profilesName?` · ${profilesName}`:''}`:'Recommended'} status={profiles.length?'loaded':'missing'} />
         <div className="privacy"><strong>Shared records.</strong> Imported records and review decisions are saved to your workspace. Original spreadsheets are not stored. Reimporting a month replaces its transactions; other months are kept. Reimporting a month resets its review decisions and sign-off so corrected transactions are reviewed again.</div>
       </section>}
 
@@ -315,12 +321,10 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
 
       {tab==='rules'&&<fieldset className="workspace-content" disabled={!canWrite(user.role,'rules')}><RulesEditor key={JSON.stringify(rules)} initial={rules} onSave={saveRules}/></fieldset>}
 
-      {tab==='reports'&&<section className="grid2">
-        <div className="card"><h2>Monthly Deposit Monitoring Report</h2><p className="muted">Carries forward your earlier flagged-deposit format, now enriched with Investor ID, AML risk, historical average, prior compliance context and review audit fields.</p><div className="report-metrics"><Summary label="Review month" value={monthLabel(activeMonth)}/><Summary label="Flagged investors (TM-001)" value={String(mandatory.length)}/><Summary label="Total flagged amount" value={rm(mandatory.reduce((s,f)=>s+f.amount,0))}/><Summary label="Pending" value={String(mandatory.filter(f=>(reviews[f.id]?.decision||'Pending')==='Pending').length)}/></div><button disabled={!mandatory.length} onClick={()=>exportRowsToXlsx(`Monthly Deposit Monitoring - ${activeMonth}.xlsx`,'Flagged Deposits',reportRows)}>Export Monitoring Excel</button></div>
+      {tab==='reports'&&activeMonth&&monthlyReports}
+      {tab==='reports'&&<section className="signoff-section">
         <SignoffForm user={user} key={`${activeMonth}:${signoffs[activeMonth]?.updatedAt||''}`} month={activeMonth} saved={signoffs[activeMonth]} onSave={value=>save(async()=>{await persist(`signoff:${activeMonth}`,[value]);setSignoffs(previous=>({...previous,[activeMonth]:value}))})}/>
-
       </section>}
-      {tab==='reports'&&activeMonth&&<div className="report-spacer">{monthlyReports}</div>}
       {tab==='aml'&&<AmlReviews profiles={profiles} completions={amlDone} onComplete={completeAml} canEdit={!busy}/>}
       {tab==='screening'&&<Screening names={screenedNames} matches={screening} lastRun={screeningRun} decisions={screenDecisions} canEdit={!busy} onRun={saveScreening} onDecide={decideScreening}/>}
       {tab==='admin'&&canViewAudit(user.role)&&<AdminPanel currentUser={user}/>}
@@ -376,13 +380,16 @@ function StaffRegister({investors,directory,staff,onChange}:{investors:string[],
   </div>
 }
 
-function tabTitle(tab:Tab){return ({dashboard:'Monthly Monitoring Dashboard',upload:'Monthly Data Upload',reviews:'Compliance Review Queue',staff:'Staff Investment Report',rules:'Monitoring Rules',reports:'Reports & Sign-Off',admin:'Administration'} as Record<Tab,string>)[tab]}
+function tabTitle(tab:Tab){return ({dashboard:'Monthly Monitoring Dashboard',upload:'Monthly Data Upload',reviews:'Compliance Review Queue',staff:'Staff Investment Report',rules:'Monitoring Rules',reports:'Reports & Sign-Off',aml:'AML Periodic Reviews',screening:'Sanctions Screening',admin:'Administration'} as Record<Tab,string>)[tab]}
+function tabSubtitle(tab:Tab){return ({rules:'Thresholds for the optional monitoring rules. TM-001 is fixed.',aml:'Investors due for their periodic AML/CFT review.',screening:'UNSC Consolidated List and MOHA domestic list.',admin:'Accounts, password resets and the audit trail.'} as Partial<Record<Tab,string>>)[tab]||''}
+function noticeTone(message:string){return message==='Changes saved.'?'success':/…$/.test(message)?'':'error'}
+function NavButton({tab,current,onSelect,label,count=0}:{tab:Tab,current:Tab,onSelect:(t:Tab)=>void,label:string,count?:number}){return <button className={tab===current?'active':''} aria-current={tab===current?'page':undefined} onClick={()=>onSelect(tab)}>{label}{count>0&&<span className="nav-count"> {count}</span>}</button>}
 function Kpi({label,value,sub,tone=''}:{label:string,value:string,sub:string,tone?:string}){return <div className={`kpi ${tone}`}><span>{label}</span><strong>{value}</strong><small>{sub}</small></div>}
 function Summary({label,value}:{label:string,value:string}){return <div className="summary-row"><span>{label}</span><strong>{value}</strong></div>}
 function StatusBadge({value}:{value:string}){return <span className={`badge ${value.toLowerCase().replace(/\s+/g,'-')}`}>{value}</span>}
 function RiskBadge({value}:{value?:string}){const v=value||'Unknown';return <span className={`badge risk-${v.toLowerCase()}`}>{v}</span>}
 function EmptyUpload({onFile,busy}:{onFile:(f?:File)=>void,busy:boolean}){return <div className="hero-empty"><div className="upload-icon">⇧</div><h2>Upload the monthly Cofundr transaction log</h2><p>The mandatory RM30,000 aggregate monthly deposit rule will run automatically.</p><label className="button">{busy?'Reading file…':'Choose Excel / CSV'}<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={e=>onFile(e.target.files?.[0])}/></label></div>}
-function UploadCard({title,text,accept,onFile,detail}:{title:string,text:string,accept:string,onFile:(f?:File)=>void,detail:string}){return <div className="upload-card"><div><h2>{title}</h2><p>{text}</p><small>{detail}</small></div><label className="button secondary">Choose file<input type="file" accept={accept} hidden onChange={e=>onFile(e.target.files?.[0])}/></label></div>}
+function UploadCard({title,text,accept,onFile,detail,status}:{title:string,text:string,accept:string,onFile:(f?:File)=>void,detail:string,status:'loaded'|'missing'|'required'}){return <div className={`upload-card is-${status}`}><div><div className="upload-title"><h2>{title}</h2><span className={`status-pill ${status}`}>{status==='loaded'?'✓ Loaded':status==='required'?'Required':'Not loaded'}</span></div><p>{text}</p><small>{detail}</small></div><label className="button secondary">Choose file<input type="file" accept={accept} hidden onChange={e=>onFile(e.target.files?.[0])}/></label></div>}
 function ReviewCard({flag,review,previous,onSave,reviewer}:{flag:Flag,review?:ReviewRecord,previous?:PreviousClearance,reviewer:string,onSave:(f:Flag,d:ReviewDecision,c:string,r:string)=>void}){
   const [decision,setDecision]=useState<ReviewDecision>(review?.decision||'Pending');const [comments,setComments]=useState(review?.comments||'');const by=reviewer
   const [open,setOpen]=useState(false)

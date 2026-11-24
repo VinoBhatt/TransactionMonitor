@@ -63,7 +63,7 @@ export function Screening({ names, matches, lastRun, decisions, canEdit, onRun, 
           <label className="file-button">{working === 'moha' ? 'Reading PDF…' : 'Upload MOHA list (PDF)'}<input type="file" accept=".pdf" aria-label="Upload MOHA list PDF" onChange={e => { void uploadMoha(e.target.files?.[0]); e.target.value = '' }} /></label>
         </div>
       </div>
-      <div className="inline-actions"><button disabled={!!working || !canEdit || !names.length || !Object.keys(lists).length} onClick={() => void screen()}>{working === 'screen' ? 'Screening…' : 'Run screening'}</button>{!names.length && <span className="muted">Upload the Investor Directory first.</span>}</div>
+      <div className="inline-actions run-row"><button disabled={!!working || !canEdit || !names.length || !Object.keys(lists).length} onClick={() => void screen()}>{working === 'screen' ? 'Screening…' : 'Run screening'}</button>{!names.length && <span className="muted">Upload the Investor Directory first.</span>}</div>
       {lastRun && <p className="muted">Last run: {lastRun}</p>}
     </div>
 

@@ -73,14 +73,14 @@ export function MonthlyReports({ month, transactions, flags, reviews, signoff, s
         <h3>Transaction Monitoring Report</h3>
         <p className="muted">Summary, flags by rule, flagged investors with review decisions, and the compliance sign-off for the month.</p>
         {(pending > 0 || signoff?.status !== 'Completed') && <p className="report-warning">{[pending ? `${pending} flag(s) still pending review` : '', signoff?.status !== 'Completed' ? 'monthly sign-off not completed' : ''].filter(Boolean).join(' · ')}. You can still generate the report, but it will show these as outstanding.</p>}
-        <button disabled={!!working} onClick={() => void run('monitoring', async () => { const blob = await monitoring(); await logReport('monitoring'); downloadBlob(blob, monitoringFileName(month)) })}>{working === 'monitoring' ? 'Generating…' : 'Download Monitoring Report (PDF)'}</button>
-        <button className="secondary" disabled={!!working} onClick={() => void run('monitoring-x', async () => { await logReport('monitoring', 'Excel'); monitoringExcel() })}>Excel</button>
+        <div className="button-row"><button aria-label="Download Monitoring Report (PDF)" disabled={!!working} onClick={() => void run('monitoring', async () => { const blob = await monitoring(); await logReport('monitoring'); downloadBlob(blob, monitoringFileName(month)) })}>{working === 'monitoring' ? 'Generating…' : 'Download PDF'}</button>
+        <button className="secondary" disabled={!!working} onClick={() => void run('monitoring-x', async () => { await logReport('monitoring', 'Excel'); monitoringExcel() })}>Excel</button></div>
       </div>
       <div className="report-block">
         <h3>Deposit Report</h3>
         <p className="muted">Every deposit for the month ({depositCount}), totalled by investor and listed by transaction, with investors above RM30,000 marked.</p>
-        <button disabled={!!working} onClick={() => void run('deposits', async () => { const blob = await deposits(); await logReport('deposits'); downloadBlob(blob, depositFileName(month)) })}>{working === 'deposits' ? 'Generating…' : 'Download Deposit Report (PDF)'}</button>
-        <button className="secondary" disabled={!!working} onClick={() => void run('deposits-x', async () => { await logReport('deposits', 'Excel'); depositsExcel() })}>Excel</button>
+        <div className="button-row"><button aria-label="Download Deposit Report (PDF)" disabled={!!working} onClick={() => void run('deposits', async () => { const blob = await deposits(); await logReport('deposits'); downloadBlob(blob, depositFileName(month)) })}>{working === 'deposits' ? 'Generating…' : 'Download PDF'}</button>
+        <button className="secondary" disabled={!!working} onClick={() => void run('deposits-x', async () => { await logReport('deposits', 'Excel'); depositsExcel() })}>Excel</button></div>
       </div>
       <div className="report-block">
         <div className="card-head"><h3>Staff Investment Reports</h3>{activeStaff.length > 0 && <button className="secondary" disabled={!!working} onClick={() => void run('all', async () => {

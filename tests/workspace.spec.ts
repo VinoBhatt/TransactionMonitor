@@ -411,9 +411,9 @@ test('sanctions screening, AML periodic reviews, month pack and Excel copies',as
   await expect(page.locator('tr',{hasText:'Sample Investor A'})).toContainText('KYC refreshed')
 
   // Month pack and Excel copies.
+  await page.getByRole('button',{name:'Dashboard',exact:true}).click()
   await page.locator('header.topbar select').selectOption('2026-09')
   await loaded(page)
-  await page.getByRole('button',{name:'Dashboard',exact:true}).click()
   const [pack]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download month pack (ZIP)'}).click()])
   expect(pack.suggestedFilename()).toBe('2026-09 Monthly Report Pack.zip')
   const [depositExcel]=await Promise.all([page.waitForEvent('download'),page.locator('.report-block',{hasText:'Deposit Report'}).getByRole('button',{name:'Excel'}).click()])
