@@ -218,11 +218,11 @@ export async function parsePriorMonitoringWorkbook(file: File): Promise<PriorCom
   return Array.from(seen.values())
 }
 
-function investorKey(t: Transaction) {
+export function investorKey(t: Transaction) {
   if (t.accountNo) return `acct:${t.accountNo.replace(/\s|-/g,'')}`
   return `name:${normalizeName(t.name)}`
 }
-function isDeposit(t: Transaction) { return norm(t.action) === 'deposit' }
+export function isDeposit(t: Transaction) { return norm(t.action) === 'deposit' }
 // Rejected withdrawal requests ("Withdrawal  CONFIRM REJECT") never left the platform, so they are not withdrawals.
 export function isWithdrawal(t: Transaction) { return norm(t.action).startsWith('withdrawal') && !norm(t.action).includes('reject') }
 

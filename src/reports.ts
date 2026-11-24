@@ -1,7 +1,7 @@
 import type { jsPDF as JsPDF } from 'jspdf'
 import type { Signoff } from '../shared/schema'
 import type { Flag, InvestorRecord, NoteMasterRow, ReviewRecord, StaffMember, Transaction } from './types'
-import { isWithdrawal, monthLabel, staffInvestments } from './monitoring'
+import { investorKey, isDeposit, isWithdrawal, monthLabel, staffInvestments } from './monitoring'
 
 export type MonitoringReportInput = {
   month: string
@@ -10,6 +10,7 @@ export type MonitoringReportInput = {
   reviews: Record<string, ReviewRecord>
   signoff?: Signoff
   generatedBy: string
+  investorIdFor?: (name: string) => string | undefined
 }
 
 export type StaffReportInput = {
@@ -116,7 +117,7 @@ export async function monitoringReport(input: MonitoringReportInput) {
   const tools = await load()
   const doc = new tools.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
   const label = monthLabel(input.month)
-  const deposits = input.transactions.filter(t => t.action.trim().toLowerCase() === 'deposit')
+  const deposits = input.transactions.filter(isDeposit)
   const withdrawals = input.transactions.filter(isWithdrawal)
   const decision = (f: Flag) => input.reviews[f.id]?.decision || 'Pending'
   const count = (value: string) => input.flags.filter(f => decision(f) === value).length
@@ -154,7 +155,29 @@ export async function monitoringReport(input: MonitoringReportInput) {
     { rightAlign: [5] })
   if (!input.flags.length) y = paragraph(doc, 'Nil.', y - 4) + 4
 
-  y = heading(doc, '4. Compliance sign-off', y)
+  // Every deposit in the month, not only the investors above the TM-001 threshold.
+  const depositTotal = deposits.reduce((s, t) => s + t.amount, 0)
+  const flaggedKeys = new Set(mandatory.map(f => f.investorKey))
+  const idFor = (t: Transaction) => mandatory.find(f => f.investorKey === investorKey(t))?.investorId || input.investorIdFor?.(t.name) || '-'
+  const byInvestor = new Map<string, Transaction[]>()
+  for (const t of deposits) byInvestor.set(investorKey(t), [...(byInvestor.get(investorKey(t)) || []), t])
+  const investorRows = [...byInvestor].map(([key, list]) => ({ key, list, total: list.reduce((s, t) => s + t.amount, 0) })).sort((a, b) => b.total - a.total)
+  y = heading(doc, '4. All deposits for the month', y)
+  y = paragraph(doc, `${deposits.length} deposit(s) from ${investorRows.length} investor(s) totalling RM ${amount(depositTotal)}. Investors above RM30,000 are marked under TM-001.`, y + 2) + 1
+  y = heading(doc, '4.1 Deposits by investor', y)
+  y = table(tools, doc, y, ['No.', 'Investor', 'Investor ID', 'Account No.', 'Deposits', 'Total (RM)', 'TM-001'],
+    investorRows.map((r, i) => [i + 1, r.list[0].name, idFor(r.list[0]), r.list[0].accountNo || '-', r.list.length, amount(r.total), flaggedKeys.has(r.key) ? 'Above RM30,000' : '-']),
+    { rightAlign: [4, 5], foot: deposits.length ? ['', 'Total', '', '', deposits.length, amount(depositTotal), ''] : undefined })
+  if (!deposits.length) y = paragraph(doc, 'Nil. No deposits were recorded for this month.', y - 4) + 4
+  if (deposits.length) {
+    y = heading(doc, '4.2 Deposit transactions', y)
+    const sorted = [...deposits].sort((a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0))
+    y = table(tools, doc, y, ['No.', 'Date / Time', 'Investor', 'Investor ID', 'Bank', 'Pay via', 'Transaction No.', 'Amount (RM)'],
+      sorted.map((t, i) => [i + 1, stamp(t.date), t.name, idFor(t), t.bank || '-', t.payVia || '-', t.transactionNo || '-', amount(t.amount)]),
+      { rightAlign: [7], foot: ['', '', 'Total', '', '', '', '', amount(depositTotal)] })
+  }
+
+  y = heading(doc, '5. Compliance sign-off', y)
   const s = input.signoff
   y = summaryTable(tools, doc, y, [
     ['Sign-off status', s?.status || 'Not signed off'],

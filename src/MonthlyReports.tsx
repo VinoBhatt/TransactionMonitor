@@ -32,7 +32,7 @@ export function MonthlyReports({ month, transactions, flags, reviews, signoff, s
   }
   // Logged before the file is handed over, so every downloaded report appears in the audit trail.
   const logReport = (kind: 'monitoring' | 'staff' | 'staff-all', subject?: string) => request('/report-log', 'POST', { kind, month, ...(subject ? { subject } : {}) })
-  const monitoring = () => monitoringReport({ month, transactions, flags, reviews, signoff, generatedBy })
+  const monitoring = () => monitoringReport({ month, transactions, flags, reviews, signoff, generatedBy, investorIdFor: name => byName(name)?.investorId })
   const staffPdf = (member: StaffMember) => staffReport({ month, staff: member, transactions, notes, investor: findInvestor(member), generatedBy })
 
   return <section className="card full monthly-reports">

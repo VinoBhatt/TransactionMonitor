@@ -53,7 +53,10 @@ test('staff selection, transactions, review and sign-off survive a new session',
   const pdfMagic=async(download:import('@playwright/test').Download)=>{const stream=await download.createReadStream();const chunks:Buffer[]=[];for await(const c of stream)chunks.push(c as Buffer);return Buffer.concat(chunks)}
   const [monitoring]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download Monitoring Report (PDF)'}).click()])
   expect(monitoring.suggestedFilename()).toMatch(/^\d{4}-\d{2} Transaction Monitoring Report\.pdf$/)
-  expect((await pdfMagic(monitoring)).subarray(0,5).toString()).toBe('%PDF-')
+  const monitoringPdf=(await pdfMagic(monitoring)).toString('latin1')
+  expect(monitoringPdf.slice(0,5)).toBe('%PDF-')
+  // Every deposit is listed, including ones below the RM30,000 threshold.
+  for(const text of ['4. All deposits for the month','4.2 Deposit transactions','20,000.00','15,000.00','35,000.00'])expect(monitoringPdf).toContain(text)
   const [single]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download staff report for Sample Staff Member'}).click()])
   expect(single.suggestedFilename()).toMatch(/Staff Investment Report - Sample Staff Member\.pdf$/)
   expect((await pdfMagic(single)).subarray(0,5).toString()).toBe('%PDF-')
