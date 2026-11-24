@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx'
-import type { Flag, HistoricalInvestor, NoteMasterRow, PriorComplianceContext, RawRow, RuleConfig, StaffMember, Transaction } from './types'
+import type { Flag, HistoricalInvestor, InvestorRecord, NoteMasterRow, PriorComplianceContext, RawRow, ReviewRecord, RuleConfig, StaffMember, Transaction } from './types'
 
 const clean = (v: unknown) => (v == null ? '' : String(v).trim())
 const norm = (v: unknown) => clean(v).toLowerCase().replace(/\s+/g, ' ')
@@ -223,7 +223,8 @@ function investorKey(t: Transaction) {
   return `name:${normalizeName(t.name)}`
 }
 function isDeposit(t: Transaction) { return norm(t.action) === 'deposit' }
-function isWithdrawal(t: Transaction) { return norm(t.action).startsWith('withdrawal') }
+// Rejected withdrawal requests ("Withdrawal  CONFIRM REJECT") never left the platform, so they are not withdrawals.
+export function isWithdrawal(t: Transaction) { return norm(t.action).startsWith('withdrawal') && !norm(t.action).includes('reject') }
 
 function buildHistoryLookup(history: HistoricalInvestor[]) {
   const byName = new Map(history.map(h=>[normalizeName(h.name),h]))
@@ -337,3 +338,106 @@ export function exportRowsToXlsx(filename: string, sheetName: string, rows: Reco
   XLSX.utils.book_append_sheet(wb, ws, sheetName)
   XLSX.writeFile(wb, filename)
 }
+
+async function sheetMatrix(file: File) {
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
+  return XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
+}
+
+// Admin Panel exports put a "Cofundr Admin Panel" title row above the real headers.
+function tableFrom(matrix: unknown[][], required: string[]) {
+  const index = matrix.findIndex(row => required.every(h => row.map(norm).includes(h)))
+  if (index < 0) return null
+  const headers = matrix[index].map(norm)
+  return matrix.slice(index + 1).map(row => (...names: string[]) => {
+    const col = headers.findIndex(h => names.includes(h))
+    return col >= 0 ? row[col] : ''
+  })
+}
+
+// Admin Panel note lists pack ID, name and reference into one cell:
+// "Note ID 2155   Note Reference ID  Parcel Sorting Express 14 IIF2155-13112026"
+export function parseNoteCell(value: unknown) {
+  const text = clean(value).replace(/\s+/g, ' ')
+  // References look like IIF2155-13112026 or, for older Working Capital notes, WC2200068.
+  const m = text.match(/^Note ID (\S+) Note Reference ID (.*?)\s*([A-Z]{2,5}\d{4,}(?:-\d{8})?)?$/)
+  return m ? { noteId: m[1], noteName: m[2].trim(), referenceId: m[3] || '' } : null
+}
+
+export async function parseNoteWorkbook(file: File): Promise<NoteMasterRow[]> {
+  const matrix = await sheetMatrix(file)
+  const table = tableFrom(matrix, ['id', 'note details'])
+  if (!table) return parseNoteMaster(await parseGenericTable(file))
+  return table.map(get => {
+    const cell = parseNoteCell(get('id'))
+    if (!cell) return null
+    const issuer = clean(get('issuer (issuer id)'))
+    return {
+      ...cell,
+      noteName: cell.noteName || clean(get('note type')) || cell.referenceId,
+      noteType: clean(get('note type')) || undefined,
+      issuer: issuer || undefined,
+      financingAmount: clean(get('financing amount(rm)')) ? money(get('financing amount(rm)')) : undefined,
+      status: clean(get('status')) || undefined,
+    }
+  }).filter((n): n is NonNullable<typeof n> => !!n)
+}
+
+export async function parseInvestorDirectory(file: File): Promise<InvestorRecord[]> {
+  const table = tableFrom(await sheetMatrix(file), ['investor id', 'investor'])
+  if (!table) throw new Error('Could not find the investor header row. Expected Investor ID and Investor columns.')
+  const out = new Map<string, InvestorRecord>()
+  for (const get of table) {
+    const investorId = clean(get('investor id')), name = clean(get('investor'))
+    if (!investorId || !name) continue
+    const date = parseDate(get('date registered'))
+    out.set(investorId, {
+      investorId, name,
+      refId: clean(get('ref id')) || undefined,
+      dateRegistered: date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` : clean(get('date registered')) || undefined,
+      email: clean(get('email')) || undefined,
+      balance: clean(get('balance account(rm)')) ? money(get('balance account(rm)')) : undefined,
+      status: clean(get('status')) || undefined,
+    })
+  }
+  return [...out.values()]
+}
+
+export function investorLookup(investors: InvestorRecord[]) {
+  const byName = new Map<string, InvestorRecord>()
+  for (const investor of investors) { const key = normalizeName(investor.name); if (key && !byName.has(key)) byName.set(key, investor) }
+  return (name: string) => byName.get(normalizeName(name))
+}
+
+export const nextMonth = (key: string) => {
+  const [y, m] = key.split('-').map(Number)
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
+}
+
+// Row numbers shift whenever the Admin Panel export grows, so they are ignored when
+// deciding whether a month's transactions actually changed.
+export function transactionFingerprint(rows: Transaction[]) {
+  return rows.map(t => JSON.stringify([t.noteId, t.name, t.userType, t.bank, t.accountNo, t.amount, t.transactionNo, t.dateRaw, t.payVia, t.action])).sort().join('\n')
+}
+
+export type PreviousClearance = { month: string, ruleId: string, review: ReviewRecord }
+
+// Most recent earlier-month clearance for the same investor, preferring the same rule.
+export function previousClearance(flag: Flag, reviews: Record<string, ReviewRecord>): PreviousClearance | undefined {
+  let best: PreviousClearance | undefined
+  for (const review of Object.values(reviews)) {
+    if (review.decision !== 'Cleared') continue
+    const [month, key, ruleId] = review.flagId.split('|')
+    if (!month || !ruleId || month >= flag.monthKey) continue
+    const sameInvestor = key === flag.investorKey
+      || (!!review.investorId && review.investorId === flag.investorId)
+      || (!!review.investorName && normalizeName(review.investorName) === normalizeName(flag.investorName))
+    if (!sameInvestor) continue
+    const better = !best || month > best.month || (month === best.month && ruleId === flag.ruleId && best.ruleId !== flag.ruleId)
+    if (better) best = { month, ruleId, review }
+  }
+  return best
+}
+
+export const sameReasonComment = (previous: PreviousClearance) =>
+  `Cleared for the same reason as ${monthLabel(previous.month)} (${previous.ruleId}, reviewed by ${previous.review.reviewedBy}): ${previous.review.comments || 'no comment recorded'}`

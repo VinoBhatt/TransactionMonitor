@@ -45,6 +45,9 @@ export type ReviewRecord = {
   comments: string
   reviewedBy: string
   reviewedAt: string
+  // Stored so a later flag for the same investor can be matched even if their bank account changes.
+  investorName?: string
+  investorId?: string
 }
 
 export type StaffMember = {
@@ -59,6 +62,20 @@ export type NoteMasterRow = {
   noteId: string
   referenceId: string
   noteName: string
+  noteType?: string
+  issuer?: string
+  financingAmount?: number
+  status?: string
+}
+
+export type InvestorRecord = {
+  investorId: string
+  refId?: string
+  name: string
+  dateRegistered?: string
+  email?: string
+  balance?: number
+  status?: string
 }
 
 export type RuleConfig = {

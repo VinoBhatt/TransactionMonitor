@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { schemaFor } from '../shared/schema'
-import { canWrite } from '../shared/auth'
+import { canViewAudit, canWrite } from '../shared/auth'
 import type { Role, User } from '../shared/auth'
 import { hashPassword, verifyPassword } from '../shared/password'
 
@@ -10,6 +10,11 @@ const publicUser=(user:UserRow):User=>({id:user.id,username:user.username,displa
 class HttpError extends Error { constructor(public status:number,message:string){super(message)} }
 const json = (value:unknown,status=200,headers:Record<string,string>={}) => Response.json(value,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...headers}})
 const now = () => Math.floor(Date.now()/1000)
+const timestamp = () => new Date().toISOString()
+function temporaryPassword() {
+  const bytes=crypto.getRandomValues(new Uint8Array(24))
+  return btoa(String.fromCharCode(...bytes)).replaceAll('+','-').replaceAll('/','_').replaceAll('=','')
+}
 async function hash(value:string) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('')
 }
@@ -46,6 +51,7 @@ async function api(request:Request,env:Env) {
       env.DB.prepare('DELETE FROM sessions WHERE expires_at<=?').bind(now()),
       env.DB.prepare('DELETE FROM login_attempts WHERE reset_at<=? OR address=?').bind(now(),address),
       env.DB.prepare('INSERT INTO sessions(token_hash,expires_at,user_id,credential_version) VALUES (?,?,?,?)').bind(await hash(token),now()+28800,user.id,user.password_hash),
+      env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES ('account',?,'login',?,?)").bind(crypto.randomUUID(),timestamp(),user.id),
     ])
     return json({user:publicUser(user)},200,{'Set-Cookie':cookie(request,token)})
   }
@@ -54,7 +60,7 @@ async function api(request:Request,env:Env) {
   if(!user)throw new HttpError(401,'Please sign in to your workspace.')
   if(path==='/api/me' && request.method==='GET')return json({user:publicUser(user)})
   if(path==='/api/password' && request.method==='POST'){
-    const input=z.object({currentPassword:z.string().max(1024),newPassword:z.string().min(16).max(128)}).parse(await body(request))
+    const input=z.object({currentPassword:z.string().max(1024),newPassword:z.string().min(1).max(128)}).parse(await body(request))
     // Reuse the IP rate limiter for password verification as well as sign-in.
     const address=await hash('password:'+user.id)
     const attempt=await env.DB.prepare(`INSERT INTO login_attempts(address,attempts,reset_at) VALUES (?,1,?) ON CONFLICT(address) DO UPDATE SET attempts=CASE WHEN reset_at<=? THEN 1 ELSE attempts+1 END, reset_at=CASE WHEN reset_at<=? THEN ? ELSE reset_at END RETURNING attempts`).bind(address,now()+900,now(),now(),now()+900).first<{attempts:number}>()
@@ -76,6 +82,57 @@ async function api(request:Request,env:Env) {
     return json({ok:true},200,{'Set-Cookie':cookie(request,'',0)})
   }
   if(user.must_change_password)throw new HttpError(403,'Change your temporary password before opening the workspace.')
+  if(path==='/api/report-log' && request.method==='POST'){
+    // Reports are generated in the browser; this records who produced which report and when.
+    const input=z.object({kind:z.enum(['monitoring','staff','staff-all']),month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),subject:z.string().trim().max(200).optional()}).parse(await body(request))
+    await env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES (?,?,'report_downloaded',?,?)")
+      .bind(`report:${input.kind}:${input.month}${input.subject?`:${input.subject}`:''}`,crypto.randomUUID(),new Date().toISOString(),user.id).run()
+    return json({ok:true})
+  }
+  if(path==='/api/users' && request.method==='GET'){
+    if(user.role!=='admin')throw new HttpError(403,'Only an Admin can manage accounts.')
+    const users=await env.DB.prepare('SELECT id,username,display_name,role,must_change_password,active,created_at,password_changed_at FROM users ORDER BY display_name').all<{
+      id:string,username:string,display_name:string,role:Role,must_change_password:number,active:number,created_at:string,password_changed_at:string|null
+    }>()
+    return json(users.results.map(row=>({id:row.id,username:row.username,displayName:row.display_name,role:row.role,mustChangePassword:!!row.must_change_password,active:!!row.active,createdAt:row.created_at,passwordChangedAt:row.password_changed_at})))
+  }
+  const userMatch=path.match(/^\/api\/users\/([a-zA-Z0-9-]+)\/(reset-password|status)$/)
+  if(userMatch && request.method==='POST'){
+    if(user.role!=='admin')throw new HttpError(403,'Only an Admin can manage accounts.')
+    const target=await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userMatch[1]).first<UserRow>()
+    if(!target)throw new HttpError(404,'Account not found.')
+    if(userMatch[2]==='reset-password'){
+      const password=temporaryPassword(),encoded=await hashPassword(password,env.AUTH_PEPPER),changedAt=timestamp()
+      await env.DB.batch([
+        env.DB.prepare('UPDATE users SET password_hash=?,must_change_password=1,password_changed_at=? WHERE id=?').bind(encoded,changedAt,target.id),
+        env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(target.id),
+        env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES ('account',?,'password_reset',?,?)").bind(target.id,changedAt,user.id),
+      ])
+      return json({temporaryPassword:password})
+    }
+    const {active}=z.object({active:z.boolean()}).parse(await body(request))
+    if(target.id===user.id&&!active)throw new HttpError(400,'You cannot deactivate your own account.')
+    if(!active&&target.role==='admin'){
+      const remaining=await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE role='admin' AND active=1 AND id<>?").bind(target.id).first<{count:number}>()
+      if(!remaining?.count)throw new HttpError(400,'At least one active Admin account is required.')
+    }
+    const changedAt=timestamp()
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET active=? WHERE id=?').bind(active?1:0,target.id),
+      ...(!active?[env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(target.id)]:[]),
+      env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES ('account',?,?,?,?)").bind(target.id,active?'account_activated':'account_deactivated',changedAt,user.id),
+    ])
+    return json({ok:true})
+  }
+  if(path==='/api/audit' && request.method==='GET'){
+    if(!canViewAudit(user.role))throw new HttpError(403,'Your role cannot view the audit trail.')
+    const limit=z.coerce.number().int().min(1).max(200).parse(url.searchParams.get('limit')||100)
+    const events=await env.DB.prepare(`SELECT a.id,a.dataset,a.action,a.created_at,u.id AS user_id,u.display_name,u.username
+      FROM audit_log a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT ?`).bind(limit).all<{
+      id:number,dataset:string,action:string,created_at:string,user_id:string|null,display_name:string|null,username:string|null
+    }>()
+    return json(events.results.map(row=>({id:row.id,dataset:row.dataset,action:row.action,createdAt:row.created_at,userId:row.user_id,displayName:row.display_name,username:row.username})))
+  }
   if(path==='/api/datasets' && request.method==='GET'){
     return json((await env.DB.prepare('SELECT * FROM datasets ORDER BY name').all()).results)
   }
@@ -91,7 +148,10 @@ async function api(request:Request,env:Env) {
     if(!schemaFor(input.dataset))throw new HttpError(400,'Unknown dataset.')
     if(!canWrite(user.role,input.dataset))throw new HttpError(403,'Your role cannot change this data.')
     const id=crypto.randomUUID()
-    await env.DB.prepare('INSERT INTO imports(id,dataset,expected_version,source,row_count,created_at,user_id) VALUES (?,?,?,?,?,?,?)').bind(id,input.dataset,input.version,input.source,input.count,now(),user.id).run()
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM imports WHERE created_at<=?').bind(now()-3600),
+      env.DB.prepare('INSERT INTO imports(id,dataset,expected_version,source,row_count,created_at,user_id) VALUES (?,?,?,?,?,?,?)').bind(id,input.dataset,input.version,input.source,input.count,now(),user.id),
+    ])
     return json({id})
   }
   const match=path.match(/^\/api\/imports\/([a-f0-9-]+)(\/commit)?$/)
@@ -134,7 +194,16 @@ async function api(request:Request,env:Env) {
 }
 export default {
   async fetch(request,env) {
-    if(!new URL(request.url).pathname.startsWith('/api/'))return env.ASSETS.fetch(request)
+    if(!new URL(request.url).pathname.startsWith('/api/')){
+      const response=await env.ASSETS.fetch(request),headers=new Headers(response.headers)
+      headers.set('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+      headers.set('Permissions-Policy','camera=(), microphone=(), geolocation=()')
+      headers.set('Referrer-Policy','no-referrer')
+      headers.set('X-Content-Type-Options','nosniff')
+      headers.set('X-Frame-Options','DENY')
+      if(new URL(request.url).protocol==='https:')headers.set('Strict-Transport-Security','max-age=31536000; includeSubDomains')
+      return new Response(response.body,{status:response.status,statusText:response.statusText,headers})
+    }
     try{return await api(request,env)}catch(error){
       if(error instanceof HttpError)return json({error:error.message},error.status)
       if(error instanceof z.ZodError)return json({error:'Invalid data: '+error.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('; ')},400)

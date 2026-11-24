@@ -29,3 +29,7 @@ export async function writeDataset(dataset:string,version:string,items:unknown[]
   }
   return request<{version:string}>(`/imports/${id}/commit`,'POST',{})
 }
+export async function mapLimit<T>(items:T[],limit:number,task:(item:T)=>Promise<void>) {
+  let next=0
+  await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{while(next<items.length)await task(items[next++])}))
+}

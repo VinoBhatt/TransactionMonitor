@@ -1,0 +1,4 @@
+Cofundr Admin Panel,,,,,,,,,,
+#,ID,Issuer (Issuer ID),Associate (Associate ID),Note Details,Note Type,Financing Amount(RM),Tenure,Interest/Profit Rate p.a (%),SST + Stamp duties(RM),Status
+1,"Note ID 2101   Note Reference ID  Sample Logistics 3 IIF2101-01092026",Sample Issuer (900),,Invoice No. INV-1,Islamic Invoice Financing,50000,60 days,12,100,IIF Note Active
+2,"Note ID 1500   Note Reference ID  Sample Builder 1 WC2200001",Sample Builder (901),,Statement 1,Working Capital,80000,90 days,14,100,WC Note Processed Completely

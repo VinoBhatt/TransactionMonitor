@@ -59,13 +59,23 @@ and save reviews. Only Admin and Chief Compliance Officer can change rules or
 save monthly sign-offs. The API enforces these permissions and records the
 signed-in user in the audit log and reviewer fields.
 
+The Administration screen gives Admin users account status controls and one-time
+temporary password resets. Resetting a password or suspending an account revokes
+that user's current sessions. Admin and Chief Compliance Officer users can view
+the latest 100 account and workspace audit events; account controls remain
+Admin-only. The sole active Admin cannot suspend their own account.
+
 Passwords are salted and hashed with PBKDF2-SHA256 and a separate `AUTH_PEPPER`
 Worker secret. Production accounts start with randomly generated temporary
 passwords and must change them before accessing records. Password changes require
-the current password, a new password of at least 16 characters, and revoke all
+the current password, a new password, and revoke all
 sessions for that account. Sessions expire after eight hours; logout revokes the
 session immediately. Same-origin writes and sign-in/password rate limits apply.
 There is no public registration or shared-password fallback.
+
+Static responses include a restrictive Content Security Policy, frame blocking,
+permissions policy, referrer policy, MIME sniffing protection, and HTTPS HSTS.
+Workers logs are retained at full sampling and traces at 10% sampling.
 
 ## Run locally
 
@@ -132,9 +142,10 @@ npm test
 ```
 
 Tests start a local Worker with an isolated temporary D1 database under `.wrangler/`.
-They verify authentication, upload validation, incomplete-import isolation,
-conflict rejection, the mandatory threshold, staff matching, and persistence
-across refresh and login. They do not use the remote database.
+They verify authentication, role permissions, account administration, security
+headers, upload validation, incomplete-import isolation, conflict rejection, the
+mandatory threshold, staff matching, and persistence across refresh and login.
+They do not use the remote database.
 
 Run `npm run types` after changing bindings; generated types are committed for CI.
 

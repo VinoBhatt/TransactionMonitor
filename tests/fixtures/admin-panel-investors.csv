@@ -1,0 +1,4 @@
+Cofundr Admin Panel,,,,,,,,,
+#,Investor ID,Ref ID,Investor,Date Registered,Contact Number,Email,Balance Account(RM),Status, 
+1,7001,,Sample Staff Member,05-Jan-2025,0100000000,staff@example.com,250.00,APPROVED,
+2,7002,,Sample Investor A,06-Jan-2025,0100000001,a@example.com,0.00,APPROVED,
