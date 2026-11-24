@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx'
-import type { Flag, HistoricalInvestor, InvestorRecord, NoteMasterRow, PriorComplianceContext, RawRow, ReviewRecord, RuleConfig, StaffMember, Transaction } from './types'
+import type { CustomerProfile, Flag, HistoricalInvestor, InvestorRecord, NoteMasterRow, PriorComplianceContext, RawRow, ReviewRecord, RuleConfig, StaffMember, Transaction } from './types'
 
 const clean = (v: unknown) => (v == null ? '' : String(v).trim())
 const norm = (v: unknown) => clean(v).toLowerCase().replace(/\s+/g, ' ')
@@ -235,7 +235,7 @@ function buildContextLookup(context: PriorComplianceContext[]) {
   return (name:string, investorId?:string) => context.find(c=>investorId && c.investorId===investorId) || byName.get(normalizeName(name))
 }
 
-export function runRules(transactions: Transaction[], rules: RuleConfig[], history: HistoricalInvestor[] = [], context: PriorComplianceContext[] = []): Flag[] {
+export function runRules(transactions: Transaction[], rules: RuleConfig[], history: HistoricalInvestor[] = [], context: PriorComplianceContext[] = [], profileFor: (name: string) => CustomerProfile | undefined = () => undefined): Flag[] {
   const flags: Flag[] = []
   const deposits = transactions.filter(isDeposit)
   const groups = new Map<string, Transaction[]>()
@@ -252,8 +252,15 @@ export function runRules(transactions: Transaction[], rules: RuleConfig[], histo
     const positives = h ? Object.values(h.monthlyDeposits).filter(v=>v>0) : []
     const average = positives.length ? positives.reduce((a,b)=>a+b,0)/positives.length : undefined
     const max = positives.length ? Math.max(...positives) : undefined
-    const c = getContext(name,h?.investorId)
-    return { h, average, max, c }
+    const p = profileFor(name)
+    const c = getContext(name,h?.investorId || p?.investorId)
+    return { h, average, max, c, p }
+  }
+  // The Customer Risk Profiling rating is the current one, so it wins over the historical workbook.
+  const commonFor = (name: string) => {
+    const {h,average,max,c,p}=enrich(name)
+    return { investorId:h?.investorId || p?.investorId, riskProfile:p?.riskRating || h?.riskProfile, activeStatus:h?.activeStatus, historicalAverageDeposit:average, historicalMaxDeposit:max, priorComplianceContext:c?.comments,
+      customerType:p?.customerType, kycStatus:p?.kycStatus, amlReviewDue:p?.nextReviewDate, sourceOfFunds:p?.sourceOfFunds, natureOfJob:p?.natureOfJob, netWorth:p?.netWorth, grossIncome:p?.grossIncome }
   }
 
   for (const [key, txs] of groups) {
@@ -261,8 +268,8 @@ export function runRules(transactions: Transaction[], rules: RuleConfig[], histo
     const total = txs.reduce((s,t) => s+t.amount,0)
     const name = txs[0].name
     const inv = investorKey(txs[0])
-    const {h,average,max,c}=enrich(name)
-    const common = { investorId:h?.investorId, riskProfile:h?.riskProfile, activeStatus:h?.activeStatus, historicalAverageDeposit:average, historicalMaxDeposit:max, priorComplianceContext:c?.comments }
+    const common = commonFor(name)
+    const average = common.historicalAverageDeposit
 
     const mandatory = byId['TM-001']
     if (mandatory && total > 30000) {
@@ -291,7 +298,7 @@ export function runRules(transactions: Transaction[], rules: RuleConfig[], histo
     })
 
     const highRisk = byId['TM-005']
-    if (highRisk?.enabled && norm(h?.riskProfile)==='high' && total > (highRisk.threshold ?? 10000)) flags.push({
+    if (highRisk?.enabled && norm(common.riskProfile)==='high' && total > (highRisk.threshold ?? 10000)) flags.push({
       id:`${month}|${inv}|TM-005`,monthKey:month,investorKey:inv,investorName:name,...common,ruleId:'TM-005',ruleName:highRisk.name,severity:'High',amount:total,transactionCount:txs.length,
       reason:`Customer is recorded as High AML/CFT risk and monthly deposits exceed RM${(highRisk.threshold ?? 10000).toLocaleString('en-MY')}.`,transactionRows:txs.map(t=>t.sourceRow)
     })
@@ -310,9 +317,8 @@ export function runRules(transactions: Transaction[], rules: RuleConfig[], histo
       const match = withdrawals.find(w => investorKey(w)===investorKey(d) && w.date && d.date && w.date >= d.date && (w.date.getTime()-d.date.getTime()) <= (rapid.threshold ?? 3)*86400000 && w.amount >= d.amount*0.8)
       if (match) {
         const m = monthKey(d.date); const inv = investorKey(d); const id = `${m}|${inv}|TM-004`
-        const {h,average,max,c}=enrich(d.name)
         if (!flags.some(f=>f.id===id)) flags.push({
-          id, monthKey:m, investorKey:inv, investorName:d.name, investorId:h?.investorId,riskProfile:h?.riskProfile,activeStatus:h?.activeStatus,historicalAverageDeposit:average,historicalMaxDeposit:max,priorComplianceContext:c?.comments,
+          id, monthKey:m, investorKey:inv, investorName:d.name, ...commonFor(d.name),
           ruleId:'TM-004', ruleName:rapid.name, severity:'High', amount:match.amount, transactionCount:2,
           reason:`A withdrawal of RM${match.amount.toLocaleString('en-MY',{minimumFractionDigits:2})} occurred within ${rapid.threshold ?? 3} day(s) after a deposit of RM${d.amount.toLocaleString('en-MY',{minimumFractionDigits:2})}.`,
           transactionRows:[d.sourceRow,match.sourceRow]
@@ -401,6 +407,53 @@ export async function parseInvestorDirectory(file: File): Promise<InvestorRecord
     })
   }
   return [...out.values()]
+}
+
+const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const kycLabel = (v: unknown) => {
+  const s = clean(v)
+  if (!s || norm(s) === 'n/a') return undefined
+  return s === '1' ? 'OK' : `Not OK (${s})`
+}
+const optional = (v: unknown) => { const s = clean(v); return s && norm(s) !== 'n/a' && !s.startsWith('#') ? s : undefined }
+
+// Reads the Retail Investors and Corporate Investors sheets of the Customer Risk Profiling workbook.
+export async function parseCustomerProfiles(file: File): Promise<CustomerProfile[]> {
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
+  const out = new Map<string, CustomerProfile>()
+  for (const sheet of wb.SheetNames) {
+    const table = tableFrom(XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sheet], { header: 1, defval: '' }), ['investor id', 'investor name', 'aml risk rating'])
+    if (!table) continue
+    const corporate = sheet.toLowerCase().includes('corporate')
+    for (const get of table) {
+      const investorId = clean(get('investor id')), name = clean(get('investor name'))
+      if (!investorId || !name) continue
+      const rating = optional(get('aml risk rating'))
+      const review = optional(get('next review date')) ? parseDate(get('next review date')) : null
+      out.set(investorId, {
+        investorId, name,
+        customerType: corporate ? 'Corporate' : 'Retail',
+        businessName: optional(get('business name')),
+        nationality: optional(get('nationality')),
+        sourceOfFunds: optional(get('personal source of funds', 'corporate source of funds')),
+        natureOfJob: optional(get('personal nature of job', 'legal form')),
+        netWorth: optional(get('personal total networth', 'corporate total networth')),
+        grossIncome: optional(get('personal gross income')),
+        kycStatus: kycLabel(get('kyc ok')),
+        riskRating: rating ? rating[0].toUpperCase() + rating.slice(1).toLowerCase() : undefined,
+        nextReviewDate: review ? isoDay(review) : undefined,
+      })
+    }
+  }
+  return [...out.values()]
+}
+
+// Matches a transaction name to a profile through the investor directory's ID first, then by name.
+export function profileLookup(profiles: CustomerProfile[], findInvestor: (name: string) => InvestorRecord | undefined) {
+  const byId = new Map(profiles.map(p => [p.investorId, p]))
+  const byName = new Map<string, CustomerProfile>()
+  for (const p of profiles) for (const n of [p.name, p.businessName]) { const key = normalizeName(n || ''); if (key && !byName.has(key)) byName.set(key, p) }
+  return (name: string) => { const id = findInvestor(name)?.investorId; return (id && byId.get(id)) || byName.get(normalizeName(name)) }
 }
 
 export function investorLookup(investors: InvestorRecord[]) {

@@ -14,6 +14,8 @@ V2 can use the historical **ACTIVE INVESTORS & ISSUERS** workbook as a reference
 
 This allows the review queue to show Investor ID, AML risk profile, historical average deposits, historical maximum deposits, and historical activity context beside the current-month flag.
 
+The **Customer Risk Profiling** workbook (Retail Investors and Corporate Investors sheets) adds each investor's current AML risk rating, KYC status, next AML review date, source of funds, occupation / legal form, net worth and income to their flags. Its rating takes priority over the historical workbook and drives TM-005. Phone numbers, emails, dates of birth and identification numbers are not stored.
+
 V2 can also import the earlier **Flagged Transaction Monitoring** workbook and carry forward non-empty `Compliance Comments` as prior context. These are displayed as historical context only and do not automatically clear a new flag.
 
 ## Core controls
@@ -27,7 +29,7 @@ V2 can also import the earlier **Flagged Transaction Monitoring** workbook and c
   - TM-002 Single Large Deposit.
   - TM-003 Deposit Frequency.
   - TM-004 Rapid Deposit / Withdrawal.
-  - TM-005 High-Risk Customer Deposit, using the historical AML risk profile.
+  - TM-005 High-Risk Customer Deposit, using the Customer Risk Profiling AML rating (or the historical workbook).
   - TM-006 Historical Deposit Spike versus the investor's prior positive-month average.
 - Compliance review queue with decision, reviewer and comments.
 - Staff selection from an investor dropdown and matching against `Investment Committed` transactions. The list combines uploaded transactions and historical investor profiles; selections are saved in D1 and can be removed individually.

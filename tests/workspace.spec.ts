@@ -1,5 +1,20 @@
 import { test, expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
+import * as XLSX from 'xlsx'
+
+// Fake Customer Risk Profiling workbook with the same two sheets and headers as the real one.
+function riskProfilingWorkbook(){
+  const wb=XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ['Investor ID','Date Created','Investor Name','Phone Number','Email','Date Of Birth','Nationality','Identification Number / Passport Number','Personal Source Of Funds','Personal Nature Of Job','Personal Total Networth','Personal Gross Income','KYC OK','KYC Fetched','KYC Fetched Value','AML Risk Rating','Next Review Date'],
+    ['7002','06/01/2025','Sample Investor A','60100000009','a@example.com','01/01/1980','Malaysian','800101019999','Savings','Others','RM50,000 - RM100,000','Below RM 50,000','1','06/01/2025 10:00','','High','01-Jan-2026'],
+  ]),'Retail Investors')
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ['Investor ID','Date Created','Investor Name','Phone Number','Email','Date Of Birth','Nationality','Identification Number','Legal Form','Business Name','Business Number','Corporate Total Networth','Corporate Source Of Funds','KYC OK','KYC Fetched','AML Risk Rating','Next Review Date'],
+    ['7003','06/01/2025','Sample Director','60100000010','d@example.com','N/A','Malaysian','N/A','Private Limited Company (Sdn. Bhd.)','Sample Holdings Sdn Bhd','1234567X','Below RM1,000,000','Business','1','','',''],
+  ]),'Corporate Investors')
+  return {name:'risk-profiling.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:XLSX.write(wb,{type:'buffer',bookType:'xlsx'}) as Buffer}
+}
 
 // Playwright does not treat a disabled <fieldset> as disabled, so wait for the loading notices instead.
 async function loaded(page:Page){
@@ -231,9 +246,16 @@ test('imports Admin Panel note and investor lists',async({page})=>{
   await expect(page.locator('.upload-card',{hasText:'5. Note Master'})).toContainText('2 notes saved · admin-panel-notes.csv')
   await page.locator('.upload-card',{hasText:'6. Investor Directory'}).locator('input[type=file]').setInputFiles('tests/fixtures/admin-panel-investors.csv')
   await expect(page.locator('.upload-card',{hasText:'6. Investor Directory'})).toContainText('2 investors saved · admin-panel-investors.csv')
+  await page.locator('.upload-card',{hasText:'7. Customer Risk Profiling'}).locator('input[type=file]').setInputFiles(riskProfilingWorkbook())
+  await expect(page.locator('.upload-card',{hasText:'7. Customer Risk Profiling'})).toContainText('2 profiles saved · risk-profiling.xlsx')
   await page.reload()
   await loaded(page)
   await page.locator('header.topbar select').selectOption('2026-09')
+  await page.getByRole('button',{name:/Review Queue/}).click()
+  const card=page.locator('.review-card',{hasText:'Sample Investor A'})
+  await expect(card).toContainText('High')
+  await expect(card).toContainText('2026-01-01 (overdue)')
+  await expect(card).toContainText('Savings · Others')
   await page.getByRole('button',{name:'Staff Investment',exact:true}).click()
   await expect(page.locator('tbody')).toContainText('IIF2101-01092026')
   await expect(page.locator('tbody')).toContainText('Sample Logistics 3')
@@ -243,6 +265,10 @@ test('imports Admin Panel note and investor lists',async({page})=>{
   const investors=records.find(d=>d.name==='investors') as {name:string,version:string}
   const rows=await (await page.request.get(`/api/records?dataset=investors&version=${investors.version}&offset=0`)).json()
   expect(JSON.stringify(rows)).not.toContain('0100000000')
+  const profiles=records.find(d=>d.name==='profiles') as {name:string,version:string}
+  const stored=JSON.stringify(await (await page.request.get(`/api/records?dataset=profiles&version=${profiles.version}&offset=0`)).json())
+  expect(stored).toContain('Sample Holdings Sdn Bhd')
+  for(const secret of ['60100000009','800101019999','a@example.com','01/01/1980'])expect(stored).not.toContain(secret)
 })
 
 test('unchanged months keep reviews, repeat investors reuse a clearance, report downloads are audited',async({page})=>{

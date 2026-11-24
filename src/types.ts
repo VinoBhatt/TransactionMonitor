@@ -28,6 +28,13 @@ export type Flag = {
   historicalAverageDeposit?: number
   historicalMaxDeposit?: number
   priorComplianceContext?: string
+  customerType?: string
+  kycStatus?: string
+  amlReviewDue?: string
+  sourceOfFunds?: string
+  natureOfJob?: string
+  netWorth?: string
+  grossIncome?: string
   ruleId: RuleId
   ruleName: string
   severity: 'Routine' | 'Medium' | 'High'
@@ -76,6 +83,23 @@ export type InvestorRecord = {
   email?: string
   balance?: number
   status?: string
+}
+
+// From the Customer Risk Profiling workbook. Phone, email, date of birth and
+// identification numbers are deliberately not stored.
+export type CustomerProfile = {
+  investorId: string
+  name: string
+  customerType: 'Retail' | 'Corporate'
+  businessName?: string
+  nationality?: string
+  sourceOfFunds?: string
+  natureOfJob?: string
+  netWorth?: string
+  grossIncome?: string
+  kycStatus?: string
+  riskRating?: string
+  nextReviewDate?: string
 }
 
 export type RuleConfig = {
