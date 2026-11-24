@@ -15,7 +15,7 @@ export type Transaction = {
   action: string
 }
 
-export type RuleId = 'TM-001' | 'TM-002' | 'TM-003' | 'TM-004' | 'TM-005' | 'TM-006'
+export type RuleId = 'TM-001' | 'TM-002' | 'TM-003' | 'TM-004' | 'TM-005' | 'TM-006' | 'TM-007'
 
 export type Flag = {
   id: string
@@ -100,6 +100,36 @@ export type CustomerProfile = {
   kycStatus?: string
   riskRating?: string
   nextReviewDate?: string
+}
+
+// One completed periodic AML review, stored as dataset amlreview:<investorId>.
+export type AmlReviewRecord = {
+  investorId: string
+  name: string
+  nextReviewDate: string
+  comments: string
+  completedBy: string
+  completedAt: string
+}
+
+// A possible match between an investor and a sanctions list entry.
+export type ScreeningMatch = {
+  key: string
+  list: 'UNSC' | 'MOHA'
+  investorId: string
+  investorName: string
+  entryName: string
+  entryRef: string
+  entryDetail: string
+  score: number
+}
+
+export type ScreeningDecision = {
+  key: string
+  decision: 'False positive' | 'True match'
+  comments: string
+  reviewedBy: string
+  reviewedAt: string
 }
 
 export type RuleConfig = {

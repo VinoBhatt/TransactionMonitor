@@ -6,3 +6,14 @@
 .monthly-reports{margin-top:18px}.report-spacer{margin-top:18px}.report-grid{display:grid;grid-template-columns:1fr 1.3fr;gap:18px}.report-block{border:1px solid #e2e8f0;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;align-items:flex-start;min-width:0}.report-block .card-head{width:100%;margin:0}.report-block .table-wrap{width:100%}.report-block h3{margin:0;font-size:15px;color:#071b32}.report-block p{margin:0}.report-warning{background:#fff8e8;border:1px solid #f3d993;color:#735411;border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.4}@media (max-width:900px){.report-grid{grid-template-columns:1fr}}
 .previous-clearance{border-color:#b9e0f5;background:#edf7fd}.previous-clearance button{justify-self:start;margin-top:6px}
 .warning-text{color:#9a5b00;white-space:normal;max-width:560px;line-height:1.4}
+
+.collapsed-item{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;border:1px solid #e0e6ec;border-radius:12px;background:#fff;font-size:13px}
+.collapsed-item .muted{flex:1;min-width:200px}
+.collapsed-item button{margin-left:auto}
+.inline-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.inline-form{display:grid;gap:6px;text-align:left;min-width:220px}
+.toolbar{display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 12px}
+.file-button{display:inline-flex;align-items:center;cursor:pointer;padding:10px 15px;border-radius:8px;background:#2694d2;color:#fff;font-weight:650;font-size:13px}
+.file-button.secondary{background:#eef3f7;color:#24445f;border:1px solid #d9e2ea}
+.file-button input{display:none}
+.review-form .inline-actions{grid-column:1/-1}.review-form .inline-actions button{flex:1}

@@ -31,12 +31,17 @@ V2 can also import the earlier **Flagged Transaction Monitoring** workbook and c
   - TM-004 Rapid Deposit / Withdrawal.
   - TM-005 High-Risk Customer Deposit, using the Customer Risk Profiling AML rating (or the historical workbook).
   - TM-006 Historical Deposit Spike versus the investor's prior positive-month average.
+  - TM-007 Large Monthly Withdrawals: aggregate withdrawals above the configured amount (default RM30,000).
 - Compliance review queue with decision, reviewer and comments.
 - Staff selection from an investor dropdown and matching against `Investment Committed` transactions. The list combines uploaded transactions and historical investor profiles; selections are saved in D1 and can be removed individually.
 - Note Master upload and mapping from Note ID to Note Reference ID / Note Name.
 - Appendix II monthly Staff Investment Report.
 - Excel report export and browser Print / Save PDF.
 - Monthly Compliance Sign-Off screen.
+- Monthly PDF reports: Deposit Report (every deposit), Transaction Monitoring Report (flags and sign-off) and one Staff Investment Report per staff member, each with an Excel copy, plus a one-click month pack (ZIP). Downloads are recorded in the audit trail.
+- Reviewed flags collapse to a one-line summary with an Edit button.
+- AML periodic reviews: next review dates from the Customer Risk Profiling workbook, overdue filter, mark-as-reviewed with the next date, Excel export.
+- Sanctions screening against the UN Security Council Consolidated List (downloaded by the Worker from scsanctions.un.org, or uploaded as XML) and the MOHA domestic list (upload the PDF from moha.gov.my). Names are compared in the browser; investor data is never sent to either site. Every possible match is reviewed as a false positive or a true match.
 
 ## Storage and authentication
 

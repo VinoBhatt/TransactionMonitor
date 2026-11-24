@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { request } from './api'
 import type { Signoff } from '../shared/schema'
 import type { Flag, InvestorRecord, NoteMasterRow, ReviewRecord, StaffMember, Transaction } from './types'
-import { investorLookup, isDeposit, monthLabel, staffInvestments } from './monitoring'
+import { exportSheets, investorKey, investorLookup, isDeposit, monthLabel, staffInvestments } from './monitoring'
 import { depositFileName, depositReport, downloadBlob, monitoringFileName, monitoringReport, staffFileName, staffReport, zipFiles } from './reports'
 
 type Props = {
@@ -31,14 +31,42 @@ export function MonthlyReports({ month, transactions, flags, reviews, signoff, s
     finally { setWorking('') }
   }
   // Logged before the file is handed over, so every downloaded report appears in the audit trail.
-  const logReport = (kind: 'monitoring' | 'deposits' | 'staff' | 'staff-all', subject?: string) => request('/report-log', 'POST', { kind, month, ...(subject ? { subject } : {}) })
+  const logReport = (kind: 'monitoring' | 'deposits' | 'staff' | 'staff-all' | 'pack', subject?: string) => request('/report-log', 'POST', { kind, month, ...(subject ? { subject } : {}) })
   const monitoring = () => monitoringReport({ month, transactions, flags, reviews, signoff, generatedBy })
   const deposits = () => depositReport({ month, transactions, flags, generatedBy, investorIdFor: name => byName(name)?.investorId })
-  const depositCount = transactions.filter(isDeposit).length
+  const depositList = transactions.filter(isDeposit)
+  const depositCount = depositList.length
+  const stamp = (d: Date | null) => d ? d.toISOString().replace('T', ' ').slice(0, 16) : ''
+  const mandatoryKeys = new Set(flags.filter(f => f.ruleId === 'TM-001').map(f => f.investorKey))
+
+  // Excel copies of the three reports, for sorting and filtering.
+  const monitoringExcel = () => exportSheets(`${month} Transaction Monitoring Report.xlsx`, [
+    { name: 'Summary', rows: [{ 'Month': monthLabel(month), 'Transactions': transactions.length, 'Deposits': depositCount, 'Flags': flags.length, 'Pending': pending, 'Sign-off': signoff?.status || 'Not signed off', 'Signed off by': signoff?.reviewedBy || '' }] },
+    { name: 'Flags', rows: flags.map((f, i) => ({ 'No.': i + 1, 'Rule': `${f.ruleId} ${f.ruleName}`, 'Investor': f.investorName, 'Investor ID': f.investorId || '', 'AML Risk': f.riskProfile || '', 'KYC': f.kycStatus || '', 'Amount (RM)': f.amount, 'Remarks': f.reason, 'Decision': reviews[f.id]?.decision || 'Pending', 'Comments': reviews[f.id]?.comments || '', 'Reviewed By': reviews[f.id]?.reviewedBy || '', 'Reviewed At': reviews[f.id]?.reviewedAt || '' })) },
+  ])
+  const depositsExcel = () => {
+    const groups = new Map<string, Transaction[]>()
+    for (const t of depositList) groups.set(investorKey(t), [...(groups.get(investorKey(t)) || []), t])
+    exportSheets(`${month} Deposit Report.xlsx`, [
+      { name: 'By Investor', rows: [...groups].map(([key, list]) => ({ 'Investor': list[0].name, 'Investor ID': byName(list[0].name)?.investorId || '', 'Account No.': list[0].accountNo, 'Deposits': list.length, 'Total (RM)': list.reduce((s, t) => s + t.amount, 0), 'TM-001': mandatoryKeys.has(key) ? 'Above RM30,000' : '' })).sort((a, b) => b['Total (RM)'] - a['Total (RM)']) },
+      { name: 'Transactions', rows: [...depositList].sort((a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0)).map((t, i) => ({ 'No.': i + 1, 'Date / Time': stamp(t.date), 'Investor': t.name, 'Investor ID': byName(t.name)?.investorId || '', 'Bank': t.bank, 'Pay via': t.payVia, 'Transaction No.': t.transactionNo, 'Amount (RM)': t.amount })) },
+    ])
+  }
+  const staffExcel = () => exportSheets(`${month} Staff Investment Reports.xlsx`, activeStaff.map(member => ({
+    name: member.name,
+    rows: staffInvestments(transactions, [member], notes).map((x, i) => ({ 'No.': i + 1, 'Staff': member.name, 'Investor ID': findInvestor(member)?.investorId || '', 'Note Reference ID': x.note?.referenceId || x.transaction.noteId, 'Note Name': x.note?.noteName || '', 'Amount (RM)': x.transaction.amount, 'Date / Time': stamp(x.transaction.date) })),
+  })))
+  const pack = async () => {
+    const files = [{ name: depositFileName(month), blob: await deposits() }, { name: monitoringFileName(month), blob: await monitoring() }]
+    for (const member of activeStaff) files.push({ name: `Staff Investment Reports/${staffFileName(month, member)}`, blob: await staffPdf(member) })
+    const zip = await zipFiles(files)
+    await logReport('pack', `${files.length} files`)
+    downloadBlob(zip, `${month} Monthly Report Pack.zip`)
+  }
   const staffPdf = (member: StaffMember) => staffReport({ month, staff: member, transactions, notes, investor: findInvestor(member), generatedBy })
 
   return <section className="card full monthly-reports">
-    <div className="card-head"><div><h2>Monthly reports · {monthLabel(month)}</h2><p className="muted">Download PDF reports to keep with your local compliance records. Each active staff member gets their own Staff Investment Report, including a nil report if they made no investments this month.</p></div></div>
+    <div className="card-head"><div><h2>Monthly reports · {monthLabel(month)}</h2><p className="muted">Download PDF reports to keep with your local compliance records. Each active staff member gets their own Staff Investment Report, including a nil report if they made no investments this month.</p></div><button disabled={!!working} onClick={() => void run('pack', pack)}>{working === 'pack' ? 'Generating…' : 'Download month pack (ZIP)'}</button></div>
     {error && <div className="notice" role="alert">{error}</div>}
     <div className="report-grid">
       <div className="report-block">
@@ -46,11 +74,13 @@ export function MonthlyReports({ month, transactions, flags, reviews, signoff, s
         <p className="muted">Summary, flags by rule, flagged investors with review decisions, and the compliance sign-off for the month.</p>
         {(pending > 0 || signoff?.status !== 'Completed') && <p className="report-warning">{[pending ? `${pending} flag(s) still pending review` : '', signoff?.status !== 'Completed' ? 'monthly sign-off not completed' : ''].filter(Boolean).join(' · ')}. You can still generate the report, but it will show these as outstanding.</p>}
         <button disabled={!!working} onClick={() => void run('monitoring', async () => { const blob = await monitoring(); await logReport('monitoring'); downloadBlob(blob, monitoringFileName(month)) })}>{working === 'monitoring' ? 'Generating…' : 'Download Monitoring Report (PDF)'}</button>
+        <button className="secondary" disabled={!!working} onClick={() => void run('monitoring-x', async () => { await logReport('monitoring', 'Excel'); monitoringExcel() })}>Excel</button>
       </div>
       <div className="report-block">
         <h3>Deposit Report</h3>
         <p className="muted">Every deposit for the month ({depositCount}), totalled by investor and listed by transaction, with investors above RM30,000 marked.</p>
         <button disabled={!!working} onClick={() => void run('deposits', async () => { const blob = await deposits(); await logReport('deposits'); downloadBlob(blob, depositFileName(month)) })}>{working === 'deposits' ? 'Generating…' : 'Download Deposit Report (PDF)'}</button>
+        <button className="secondary" disabled={!!working} onClick={() => void run('deposits-x', async () => { await logReport('deposits', 'Excel'); depositsExcel() })}>Excel</button>
       </div>
       <div className="report-block">
         <div className="card-head"><h3>Staff Investment Reports</h3>{activeStaff.length > 0 && <button className="secondary" disabled={!!working} onClick={() => void run('all', async () => {
@@ -59,7 +89,7 @@ export function MonthlyReports({ month, transactions, flags, reviews, signoff, s
           const zip = await zipFiles(files)
           await logReport('staff-all', `${files.length} staff`)
           downloadBlob(zip, `${month} Staff Investment Reports.zip`)
-        })}>{working === 'all' ? 'Generating…' : `Download all (${activeStaff.length}) as ZIP`}</button>}</div>
+        })}>{working === 'all' ? 'Generating…' : `Download all (${activeStaff.length}) as ZIP`}</button>}{activeStaff.length > 0 && <button className="secondary" disabled={!!working} onClick={() => void run('staff-x', async () => { await logReport('staff-all', 'Excel'); staffExcel() })}>Excel</button>}</div>
         {!activeStaff.length ? <p className="muted">No staff selected. Add staff in the Staff Register under Monthly Upload.</p> :
           <div className="table-wrap"><table><thead><tr><th>Staff</th><th>Investments</th><th>Total (RM)</th><th></th></tr></thead><tbody>{activeStaff.map(member => {
             const rows = staffInvestments(transactions, [member], notes)

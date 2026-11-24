@@ -6,12 +6,14 @@ import { canViewAudit, canWrite, roleLabels } from '../shared/auth'
 import type { User } from '../shared/auth'
 import { AdminPanel } from './AdminPanel'
 import { MonthlyReports } from './MonthlyReports'
+import { AmlReviews } from './AmlReviews'
+import { Screening } from './Screening'
 import type { Signoff } from '../shared/schema'
-import type { CustomerProfile, Flag, HistoricalInvestor, InvestorRecord, NoteMasterRow, PriorComplianceContext, ReviewDecision, ReviewRecord, RuleConfig, StaffMember, Transaction } from './types'
+import type { AmlReviewRecord, CustomerProfile, Flag, ScreeningDecision, ScreeningMatch, HistoricalInvestor, InvestorRecord, NoteMasterRow, PriorComplianceContext, ReviewDecision, ReviewRecord, RuleConfig, StaffMember, Transaction } from './types'
 import { exportRowsToXlsx, monthKey, monthLabel, parseHistoricalWorkbook, parsePriorMonitoringWorkbook, normalizeName, parseWorkbook, runRules, staffInvestments, parseNoteWorkbook, parseInvestorDirectory, investorLookup, parseCustomerProfiles, profileLookup, nextMonth, transactionFingerprint, previousClearance, sameReasonComment } from './monitoring'
 import type { PreviousClearance } from './monitoring'
 
-type Tab = 'dashboard'|'upload'|'reviews'|'staff'|'rules'|'reports'|'admin'
+type Tab = 'dashboard'|'upload'|'reviews'|'staff'|'rules'|'reports'|'aml'|'screening'|'admin'
 
 const defaultRules: RuleConfig[] = [
   { id:'TM-001', name:'Monthly Deposit Threshold', description:'Mandatory: flag when aggregate Deposit transactions for the same investor exceed RM30,000 in a calendar month.', enabled:true, locked:true, threshold:30000 },
@@ -19,6 +21,7 @@ const defaultRules: RuleConfig[] = [
   { id:'TM-003', name:'Deposit Frequency', description:'Optional: flag when an investor makes at least the configured number of deposits in the month.', enabled:false, locked:false, threshold:3 },
   { id:'TM-004', name:'Rapid Deposit / Withdrawal', description:'Optional: flag where a withdrawal of at least 80% of a deposit follows within the configured number of days.', enabled:false, locked:false, threshold:3 },
   { id:'TM-005', name:'High-Risk Customer Deposit', description:'Optional: use the AML risk rating (Customer Risk Profiling, else the historical workbook) and flag High-risk customers whose monthly deposits exceed the configured amount.', enabled:false, locked:false, threshold:10000 },
+  { id:'TM-007', name:'Large Monthly Withdrawals', description:'Optional: flag when aggregate withdrawals for the same investor exceed the configured amount in a calendar month. Rejected withdrawals are ignored.', enabled:false, locked:false, threshold:30000 },
   { id:'TM-006', name:'Historical Deposit Spike', description:'Optional: flag when current monthly deposits are at least the configured multiple of the investor\'s average positive historical monthly deposits, and also exceed RM30,000.', enabled:false, locked:false, threshold:3 },
 ]
 
@@ -55,6 +58,8 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
   const [directory,setDirectory]=useState<InvestorRecord[]>([]),[directoryName,setDirectoryName]=useState(''),[notesName,setNotesName]=useState('')
   const [history,setHistory]=useState<HistoricalInvestor[]>([])
   const [profiles,setProfiles]=useState<CustomerProfile[]>([]),[profilesName,setProfilesName]=useState('')
+  const [amlDone,setAmlDone]=useState<Record<string,AmlReviewRecord>>({})
+  const [screening,setScreening]=useState<ScreeningMatch[]>([]),[screeningRun,setScreeningRun]=useState(''),[screenDecisions,setScreenDecisions]=useState<Record<string,ScreeningDecision>>({})
   const [priorContext,setPriorContext]=useState<PriorComplianceContext[]>([])
   const [filterMonth,setFilterMonth]=useState('')
   const [busy,setBusy]=useState(false)
@@ -80,6 +85,9 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
       const storedRules=(values.rules||[]) as RuleConfig[]
       setRules(defaultRules.map(r=>r.locked?r:{...r,...storedRules.find(x=>x.id===r.id)}))
       setReviews(Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('review:')).flatMap(([,rows])=>(rows as ReviewRecord[]).map(r=>[r.flagId,r]))))
+      setAmlDone(Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('amlreview:')).flatMap(([,rows])=>(rows as AmlReviewRecord[]).map(r=>[r.investorId,r]))))
+      setScreenDecisions(Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('screen:')).flatMap(([,rows])=>(rows as ScreeningDecision[]).map(r=>[r.key,r]))))
+      setScreening((values.screening||[]) as ScreeningMatch[]);setScreeningRun(datasets.find(d=>d.name==='screening')?.source||'')
       setSignoffs(Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('signoff:')).flatMap(([,rows])=>(rows as Signoff[]).map(r=>[r.month,r]))))
       setSourceName(datasets.filter(d=>d.name.startsWith('transactions:')).map(d=>d.source).filter((s,i,a)=>a.indexOf(s)===i).join(', '))
       setHistoryName(datasets.find(d=>d.name==='history')?.source||'');setPriorName(datasets.find(d=>d.name==='context')?.source||'');setDirectoryName(datasets.find(d=>d.name==='investors')?.source||'');setNotesName(datasets.find(d=>d.name==='notes')?.source||'');setProfilesName(datasets.find(d=>d.name==='profiles')?.source||'')
@@ -113,7 +121,17 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
   const findInvestor=useMemo(()=>investorLookup(directory),[directory])
   const findProfile=useMemo(()=>profileLookup(profiles,findInvestor),[profiles,findInvestor])
   const today=new Date().toISOString().slice(0,10)
-  const overdueProfiles=profiles.filter(p=>p.nextReviewDate&&p.nextReviewDate<today)
+  const overdueProfiles=profiles.filter(p=>{const due=[p.nextReviewDate,amlDone[p.investorId]?.nextReviewDate].filter(Boolean).sort().pop();return !!due&&due<today})
+  const amlDue=overdueProfiles.length
+  const screeningPending=screening.filter(m=>!screenDecisions[m.key]).length
+  // Everyone in the directory plus corporate business names from the risk profiles.
+  const screenedNames=useMemo(()=>{
+    const seen=new Set<string>(),out:{investorId:string,name:string}[]=[]
+    const add=(investorId:string,name?:string)=>{const key=`${investorId}|${normalizeName(name||'')}`;if(name&&!seen.has(key)){seen.add(key);out.push({investorId,name})}}
+    for(const i of directory)add(i.investorId,i.name)
+    for(const p of profiles){add(p.investorId,p.name);add(p.investorId,p.businessName)}
+    return out
+  },[directory,profiles])
   // Fill investor IDs from the platform directory when the AML workbook has no match.
   const activeMonth=filterMonth || months[0] || ''
   // The following month is loaded too, so TM-004 sees withdrawals just after a month-end deposit.
@@ -129,7 +147,7 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
     return ()=>{cancelled=true}
   },[neededMonths,txByMonth,ready])
   const transactions=useMemo(()=>neededMonths.flatMap(m=>txByMonth[m]||[]),[neededMonths,txByMonth])
-  const flags=useMemo(()=>runRules(transactions,rules,history,priorContext,findProfile).map(f=>f.investorId?f:{...f,investorId:findInvestor(f.investorName)?.investorId}),[transactions,rules,history,priorContext,findInvestor,findProfile])
+  const flags=useMemo(()=>runRules(transactions,rules,history,priorContext,findProfile).map(f=>({...f,investorId:f.investorId||findInvestor(f.investorName)?.investorId,riskProfile:f.riskProfile||(profiles.length?(f.customerType?'No rating':'Not profiled'):undefined)})),[transactions,rules,history,priorContext,findInvestor,findProfile,profiles.length])
   const monthTx=useMemo(()=>transactions.filter(t=>monthKey(t.date)===activeMonth),[transactions,activeMonth])
   const monthFlags=useMemo(()=>flags.filter(f=>f.monthKey===activeMonth),[flags,activeMonth])
   const staffRows=useMemo(()=>staffInvestments(monthTx,staff,notes),[monthTx,staff,notes])
@@ -201,6 +219,17 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
     const rows=await parseInvestorDirectory(file);if(!rows.length)throw new Error('No investors found in this file.')
     await persist('investors',rows,file.name);setDirectory(rows);setDirectoryName(file.name)
   })}
+  async function completeAml(record:Omit<AmlReviewRecord,'completedBy'|'completedAt'>){await save(async()=>{
+    const row={...record,completedBy:user.displayName,completedAt:new Date().toISOString()}
+    await persist(`amlreview:${record.investorId}`,[row]);setAmlDone(d=>({...d,[record.investorId]:row}))
+  })}
+  async function saveScreening(matches:ScreeningMatch[],summary:string){await save(async()=>{
+    await persist('screening',matches,summary.slice(0,500));setScreening(matches);setScreeningRun(summary.slice(0,500))
+  })}
+  async function decideScreening(key:string,decision:ScreeningDecision['decision'],comments:string){await save(async()=>{
+    const row={key,decision,comments,reviewedBy:user.displayName,reviewedAt:new Date().toISOString()}
+    await persist(`screen:${key}`,[row]);setScreenDecisions(d=>({...d,[key]:row}))
+  })}
   async function uploadProfiles(file?:File){if(file)await save(async()=>{
     const rows=await parseCustomerProfiles(file);if(!rows.length)throw new Error('No customer profiles found. Expected sheets with Investor ID, Investor Name and AML Risk Rating columns.')
     await persist('profiles',rows,file.name);setProfiles(rows);setProfilesName(file.name)
@@ -233,6 +262,8 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
         <button className={tab==='staff'?'active':''} onClick={()=>setTab('staff')}>Staff Investment</button>
         <button className={tab==='rules'?'active':''} onClick={()=>setTab('rules')}>Monitoring Rules</button>
         <button className={tab==='reports'?'active':''} onClick={()=>setTab('reports')}>Reports & Sign-Off</button>
+        <button className={tab==='aml'?'active':''} onClick={()=>setTab('aml')}>AML Reviews {amlDue>0?`(${amlDue})`:''}</button>
+        <button className={tab==='screening'?'active':''} onClick={()=>setTab('screening')}>Sanctions Screening {screeningPending>0?`(${screeningPending})`:''}</button>
         {canViewAudit(user.role)&&<button className={tab==='admin'?'active':''} onClick={()=>setTab('admin')}>Administration</button>}
       </nav>
       <div className="sidebar-note"><strong>Mandatory control</strong><span>TM-001 flags aggregate monthly deposits strictly above RM30,000. This control cannot be disabled.</span></div>
@@ -256,7 +287,7 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
         </section>
         <section className="grid2">
           <div className="card"><div className="card-head"><h2>Mandatory threshold review</h2><button className="link" onClick={()=>setTab('reviews')}>Open review queue →</button></div>{mandatory.length?<div className="table-wrap"><table><thead><tr><th>Investor</th><th>Risk</th><th>Monthly Deposits</th><th>History</th><th>Status</th></tr></thead><tbody>{mandatory.slice(0,10).map(f=><tr key={f.id}><td>{f.investorName}<small className="subline">{f.investorId?`ID ${f.investorId}`:''}</small></td><td><RiskBadge value={f.riskProfile}/></td><td>{rm(f.amount)}</td><td>{f.historicalAverageDeposit?`${(f.amount/f.historicalAverageDeposit).toFixed(1)}× avg`:'—'}</td><td><StatusBadge value={reviews[f.id]?.decision||'Pending'}/></td></tr>)}</tbody></table></div>:<div className="empty-small">No investor exceeded RM30,000 for this month.</div>}</div>
-          <div className="card"><h2>Monitoring data coverage</h2><div className="summary-list"><Summary label="TM-001 threshold" value="> RM30,000 aggregate deposits"/><Summary label="Historical investor profiles" value={history.length?`${history.length} loaded`:'Not loaded'}/><Summary label="Prior compliance contexts" value={priorContext.length?`${priorContext.length} carried forward`:'Not loaded'}/><Summary label="High-risk investors in TM-001" value={String(highRiskMandatory)}/><Summary label="Staff register" value={`${staff.filter(s=>s.active).length} active staff`}/><Summary label="Note master" value={`${notes.length} notes loaded`}/><Summary label="Investor directory" value={directory.length?`${directory.length} investors loaded`:'Not loaded'}/><Summary label="Customer risk profiles" value={profiles.length?`${profiles.length} loaded · ${profiles.filter(p=>p.riskRating==='High').length} High · ${profiles.filter(p=>p.riskRating==='Medium').length} Medium`:'Not loaded'}/><Summary label="AML periodic reviews overdue" value={profiles.length?String(overdueProfiles.length):'—'}/><Summary label="Staff investments detected" value={`${staffRows.length}`}/></div></div>
+          <div className="card"><h2>Monitoring data coverage</h2><div className="summary-list"><Summary label="TM-001 threshold" value="> RM30,000 aggregate deposits"/><Summary label="Historical investor profiles" value={history.length?`${history.length} loaded`:'Not loaded'}/><Summary label="Prior compliance contexts" value={priorContext.length?`${priorContext.length} carried forward`:'Not loaded'}/><Summary label="High-risk investors in TM-001" value={String(highRiskMandatory)}/><Summary label="Staff register" value={`${staff.filter(s=>s.active).length} active staff`}/><Summary label="Note master" value={`${notes.length} notes loaded`}/><Summary label="Investor directory" value={directory.length?`${directory.length} investors loaded`:'Not loaded'}/><Summary label="Customer risk profiles" value={profiles.length?`${profiles.length} loaded · ${profiles.filter(p=>p.riskRating==='High').length} High · ${profiles.filter(p=>p.riskRating==='Medium').length} Medium`:'Not loaded'}/><Summary label="AML periodic reviews overdue" value={profiles.length?String(overdueProfiles.length):'—'}/><Summary label="Flags without AML rating" value={profiles.length?String(monthFlags.filter(f=>f.riskProfile==='No rating'||f.riskProfile==='Not profiled').length):'—'}/><Summary label="Sanctions screening" value={screeningRun?`${screening.length} possible match(es), ${screeningPending} pending`:'Not run'}/><Summary label="Staff investments detected" value={`${staffRows.length}`}/></div></div>
         </section>
         {monthlyReports}
       </>}</>}
@@ -290,6 +321,8 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
 
       </section>}
       {tab==='reports'&&activeMonth&&<div className="report-spacer">{monthlyReports}</div>}
+      {tab==='aml'&&<AmlReviews profiles={profiles} completions={amlDone} onComplete={completeAml} canEdit={!busy}/>}
+      {tab==='screening'&&<Screening names={screenedNames} matches={screening} lastRun={screeningRun} decisions={screenDecisions} canEdit={!busy} onRun={saveScreening} onDecide={decideScreening}/>}
       {tab==='admin'&&canViewAudit(user.role)&&<AdminPanel currentUser={user}/>}
       </fieldset>
     </main>
@@ -352,6 +385,9 @@ function EmptyUpload({onFile,busy}:{onFile:(f?:File)=>void,busy:boolean}){return
 function UploadCard({title,text,accept,onFile,detail}:{title:string,text:string,accept:string,onFile:(f?:File)=>void,detail:string}){return <div className="upload-card"><div><h2>{title}</h2><p>{text}</p><small>{detail}</small></div><label className="button secondary">Choose file<input type="file" accept={accept} hidden onChange={e=>onFile(e.target.files?.[0])}/></label></div>}
 function ReviewCard({flag,review,previous,onSave,reviewer}:{flag:Flag,review?:ReviewRecord,previous?:PreviousClearance,reviewer:string,onSave:(f:Flag,d:ReviewDecision,c:string,r:string)=>void}){
   const [decision,setDecision]=useState<ReviewDecision>(review?.decision||'Pending');const [comments,setComments]=useState(review?.comments||'');const by=reviewer
-  return <article className="review-card"><div className="review-main"><div className="rule-line"><span className={`severity ${flag.severity.toLowerCase()}`}>{flag.severity}</span><strong>{flag.ruleId} · {flag.ruleName}</strong></div><h3>{flag.investorName}</h3><div className="review-amount">{rm(flag.amount)}</div><p>{flag.reason}</p><div className="context-grid"><Context label="Investor ID" value={flag.investorId||'Not matched'}/><Context label="AML Risk" value={flag.riskProfile||'Not loaded'}/>{flag.customerType&&<><Context label="KYC" value={flag.kycStatus||'Not recorded'}/><Context label="Next AML review" value={flag.amlReviewDue?`${flag.amlReviewDue}${flag.amlReviewDue<new Date().toISOString().slice(0,10)?' (overdue)':''}`:'Not set'}/><Context label="Source of funds" value={[flag.sourceOfFunds,flag.natureOfJob].filter(Boolean).join(' · ')||'Not recorded'}/><Context label={flag.customerType==='Corporate'?'Net worth':'Net worth / income'} value={[flag.netWorth,flag.grossIncome].filter(Boolean).join(' / ')||'Not recorded'}/></>}<Context label="Historical Avg Deposit" value={flag.historicalAverageDeposit?rm(flag.historicalAverageDeposit):'No history'}/><Context label="Historical Max Deposit" value={flag.historicalMaxDeposit?rm(flag.historicalMaxDeposit):'No history'}/></div>{previous&&<div className="prior-context previous-clearance"><strong>Previously cleared · {monthLabel(previous.month)} · {previous.ruleId} · {previous.review.reviewedBy}</strong><span>{previous.review.comments||'No comment recorded.'}</span>{(review?.decision||'Pending')==='Pending'&&<button className="secondary" onClick={()=>onSave(flag,'Cleared',sameReasonComment(previous),by)}>Clear with same reason</button>}</div>}{flag.priorComplianceContext&&<div className="prior-context"><strong>Prior Compliance Context</strong><span>{flag.priorComplianceContext}</span></div>}<small>Source row(s): {flag.transactionRows.join(', ')} · Transactions: {flag.transactionCount}</small></div><div className="review-form"><label>Decision<select value={decision} onChange={e=>setDecision(e.target.value as ReviewDecision)}><option>Pending</option><option>Cleared</option><option>Request Information</option><option>Escalated</option></select></label><label>Reviewed by<input value={by} readOnly/></label><label>Compliance comments<textarea rows={4} value={comments} onChange={e=>setComments(e.target.value)} placeholder="Reason for decision / follow-up"/></label><button onClick={()=>onSave(flag,decision,comments,by)}>Save Review</button></div></article>
+  const [open,setOpen]=useState(false)
+  // Reviewed flags collapse to one line; Edit reopens the full card.
+  if(review&&review.decision!=='Pending'&&!open)return <div className="collapsed-item"><StatusBadge value={review.decision}/><strong>{flag.investorName}</strong><span className="muted">{flag.ruleId} · {rm(flag.amount)} · {review.reviewedBy}, {review.reviewedAt.slice(0,10)}{review.comments?` · ${review.comments.length>90?review.comments.slice(0,90)+'…':review.comments}`:''}</span><button className="secondary" aria-label={`Edit review for ${flag.investorName}`} onClick={()=>setOpen(true)}>Edit</button></div>
+  return <article className="review-card"><div className="review-main"><div className="rule-line"><span className={`severity ${flag.severity.toLowerCase()}`}>{flag.severity}</span><strong>{flag.ruleId} · {flag.ruleName}</strong></div><h3>{flag.investorName}</h3><div className="review-amount">{rm(flag.amount)}</div><p>{flag.reason}</p><div className="context-grid"><Context label="Investor ID" value={flag.investorId||'Not matched'}/><Context label="AML Risk" value={flag.riskProfile||'Not loaded'}/>{flag.customerType&&<><Context label="KYC" value={flag.kycStatus||'Not recorded'}/><Context label="Next AML review" value={flag.amlReviewDue?`${flag.amlReviewDue}${flag.amlReviewDue<new Date().toISOString().slice(0,10)?' (overdue)':''}`:'Not set'}/><Context label="Source of funds" value={[flag.sourceOfFunds,flag.natureOfJob].filter(Boolean).join(' · ')||'Not recorded'}/><Context label={flag.customerType==='Corporate'?'Net worth':'Net worth / income'} value={[flag.netWorth,flag.grossIncome].filter(Boolean).join(' / ')||'Not recorded'}/></>}<Context label="Historical Avg Deposit" value={flag.historicalAverageDeposit?rm(flag.historicalAverageDeposit):'No history'}/><Context label="Historical Max Deposit" value={flag.historicalMaxDeposit?rm(flag.historicalMaxDeposit):'No history'}/></div>{previous&&<div className="prior-context previous-clearance"><strong>Previously cleared · {monthLabel(previous.month)} · {previous.ruleId} · {previous.review.reviewedBy}</strong><span>{previous.review.comments||'No comment recorded.'}</span>{(review?.decision||'Pending')==='Pending'&&<button className="secondary" onClick={()=>onSave(flag,'Cleared',sameReasonComment(previous),by)}>Clear with same reason</button>}</div>}{flag.priorComplianceContext&&<div className="prior-context"><strong>Prior Compliance Context</strong><span>{flag.priorComplianceContext}</span></div>}<small>Source row(s): {flag.transactionRows.join(', ')} · Transactions: {flag.transactionCount}</small></div><div className="review-form"><label>Decision<select value={decision} onChange={e=>setDecision(e.target.value as ReviewDecision)}><option>Pending</option><option>Cleared</option><option>Request Information</option><option>Escalated</option></select></label><label>Reviewed by<input value={by} readOnly/></label><label>Compliance comments<textarea rows={4} value={comments} onChange={e=>setComments(e.target.value)} placeholder="Reason for decision / follow-up"/></label><div className="inline-actions"><button onClick={()=>onSave(flag,decision,comments,by)}>Save Review</button>{open&&<button className="secondary" onClick={()=>setOpen(false)}>Cancel</button>}</div></div></article>
 }
 function Context({label,value}:{label:string,value:string}){return <div><span>{label}</span><strong>{value}</strong></div>}

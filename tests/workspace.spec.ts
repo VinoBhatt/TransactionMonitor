@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import * as XLSX from 'xlsx'
+import { jsPDF } from 'jspdf'
 
 // Fake Customer Risk Profiling workbook with the same two sheets and headers as the real one.
 function riskProfilingWorkbook(){
@@ -258,6 +259,9 @@ test('imports Admin Panel note and investor lists',async({page})=>{
   await loaded(page)
   await page.locator('header.topbar select').selectOption('2026-09')
   await page.getByRole('button',{name:/Review Queue/}).click()
+  // An earlier test may already have reviewed this flag, which collapses it.
+  const reopen=page.getByRole('button',{name:'Edit review for Sample Investor A'})
+  if(await reopen.count())await reopen.click()
   const card=page.locator('.review-card',{hasText:'Sample Investor A'})
   await expect(card).toContainText('High')
   await expect(card).toContainText('2026-01-01 (overdue)')
@@ -303,13 +307,21 @@ test('unchanged months keep reviews, repeat investors reuse a clearance, report 
   await page.locator('header.topbar select').selectOption('2025-03')
   await loaded(page)
   await page.getByRole('button',{name:/Review Queue/}).click()
+  // Reviewed flags collapse to one line; Edit reopens the card.
+  await expect(page.locator('.collapsed-item')).toContainText('Cleared')
+  await expect(page.locator('.collapsed-item')).toContainText('Known salary account')
+  await page.locator('.collapsed-item').getByRole('button',{name:/^Edit review for /}).click()
   await expect(page.getByRole('combobox',{name:'Decision',exact:true})).toHaveValue('Cleared')
+  await page.getByRole('button',{name:'Cancel',exact:true}).click()
+  await expect(page.locator('.review-card')).toHaveCount(0)
   await page.locator('header.topbar select').selectOption('2025-04')
   await loaded(page)
   await expect(page.locator('.previous-clearance')).toContainText('Known salary account')
   page.once('dialog',dialog=>void dialog.accept())
   await page.getByRole('button',{name:'Clear 1 repeat investor(s) with previous reason'}).click()
   await expect(page.getByText('1 repeat flag(s) cleared with their previous reason.')).toBeVisible()
+  await expect(page.locator('.collapsed-item')).toContainText('same reason as March 2025')
+  await page.locator('.collapsed-item').getByRole('button',{name:/^Edit review for /}).click()
   await expect(page.getByRole('combobox',{name:'Decision',exact:true})).toHaveValue('Cleared')
   await expect(page.locator('.review-form textarea')).toHaveValue(/same reason as March 2025.*Known salary account/)
   await page.getByRole('button',{name:'Dashboard',exact:true}).click()
@@ -318,4 +330,96 @@ test('unchanged months keep reviews, repeat investors reuse a clearance, report 
   await page.getByRole('button',{name:'Administration',exact:true}).click()
   await expect(page.locator('tbody').last()).toContainText('Downloaded report')
   await expect(page.locator('tbody').last()).toContainText('Transaction Monitoring Report · 2025-04')
+})
+
+const unscXml=()=>({name:'consolidated.xml',mimeType:'application/xml',buffer:Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+<CONSOLIDATED_LIST dateGenerated="2026-11-20T00:00:00.000Z"><INDIVIDUALS>
+<INDIVIDUAL><DATAID>1</DATAID><FIRST_NAME>SAMPLE</FIRST_NAME><SECOND_NAME>INVESTOR</SECOND_NAME><UN_LIST_TYPE>Test</UN_LIST_TYPE><REFERENCE_NUMBER>TSi.001</REFERENCE_NUMBER><LISTED_ON>2020-01-01</LISTED_ON><NATIONALITY><VALUE>Testland</VALUE></NATIONALITY><INDIVIDUAL_ALIAS><QUALITY>Good</QUALITY><ALIAS_NAME>Sampel Investor</ALIAS_NAME></INDIVIDUAL_ALIAS><INDIVIDUAL_DATE_OF_BIRTH><YEAR>1970</YEAR></INDIVIDUAL_DATE_OF_BIRTH></INDIVIDUAL>
+<INDIVIDUAL><DATAID>2</DATAID><FIRST_NAME>UNRELATED</FIRST_NAME><SECOND_NAME>PERSON</SECOND_NAME><REFERENCE_NUMBER>TSi.002</REFERENCE_NUMBER></INDIVIDUAL>
+</INDIVIDUALS><ENTITIES/></CONSOLIDATED_LIST>`)})
+
+// Fake MOHA-style list PDF: a title, a header row and numbered entries on separate lines.
+function mohaPdf(){
+  const doc=new jsPDF()
+  doc.text('SENARAI KEMENTERIAN DALAM NEGERI (TEST)',14,20)
+  doc.text('No.  Name  Alias  Date of Birth',14,30)
+  doc.text('1.  Example Listed Person  -  01.01.1970',14,40)
+  doc.text('2.  Sample Investor  Investor Sample  02.02.1975',14,50)
+  return {name:'moha-list.pdf',mimeType:'application/pdf',buffer:Buffer.from(doc.output('arraybuffer'))}
+}
+
+test('sanctions screening, AML periodic reviews, month pack and Excel copies',async({page})=>{
+  await page.goto('/')
+  await page.getByLabel('Username',{exact:true}).fill('admin')
+  await page.getByLabel('Password',{exact:true}).fill('local-integration-test-password')
+  await page.getByRole('button',{name:'Sign in',exact:true}).click()
+  await loaded(page)
+  await page.getByRole('button',{name:'Monthly Upload',exact:true}).click()
+  await page.locator('.upload-card',{hasText:'1. Monthly Transaction Log'}).locator('input[type=file]').setInputFiles('public/examples/sample-transactions.csv')
+  await expect(page.getByText('Changes saved.',{exact:true})).toBeVisible()
+  await loaded(page)
+  await page.getByRole('button',{name:'Monthly Upload',exact:true}).click()
+  await page.locator('.upload-card',{hasText:'6. Investor Directory'}).locator('input[type=file]').setInputFiles('tests/fixtures/admin-panel-investors.csv')
+  await expect(page.locator('.upload-card',{hasText:'6. Investor Directory'})).toContainText('2 investors saved')
+  await page.locator('.upload-card',{hasText:'7. Customer Risk Profiling'}).locator('input[type=file]').setInputFiles(riskProfilingWorkbook())
+  await expect(page.locator('.upload-card',{hasText:'7. Customer Risk Profiling'})).toContainText('2 profiles saved')
+
+  // Sanctions screening: the uploaded list matches one investor, which is then reviewed and collapses.
+  await page.getByRole('button',{name:/^Sanctions Screening/}).click()
+  await page.getByLabel('Upload UNSC list XML').setInputFiles(unscXml())
+  await expect(page.getByText('UNSC Consolidated List generated 2026-11-20 (2 entries)')).toBeVisible()
+  await page.getByLabel('Upload MOHA list PDF').setInputFiles(mohaPdf())
+  await expect(page.getByText('MOHA list moha-list.pdf (1 page(s), 4 lines)',{exact:true})).toBeVisible()
+  await page.getByRole('button',{name:'Run screening',exact:true}).click()
+  await expect(page.getByText(/^Last run: Screened \d+ names against UNSC/)).toBeVisible()
+  await expect(page.locator('.review-card',{hasText:'Page 1, line 4'})).toContainText('Sample Investor A')
+  const moha=page.locator('.review-card',{hasText:'Page 1, line 4'})
+  await moha.getByLabel('Comments').fill('Not the same person')
+  await moha.getByRole('button',{name:'Save decision'}).click()
+  await expect(page.locator('.review-card',{hasText:'Page 1, line 4'})).toHaveCount(0)
+  const match=page.locator('.review-card',{hasText:'Sample Investor A'})
+  await expect(match).toContainText('TSi.001')
+  await expect(page.locator('.review-card',{hasText:'Sample Staff Member'})).toHaveCount(0)
+  await match.getByLabel('Comments').fill('Different nationality and year of birth')
+  await match.getByRole('button',{name:'Save decision'}).click()
+  await expect(page.getByText('All possible matches have been reviewed.')).toBeVisible()
+  await page.getByLabel('Show reviewed').check()
+  await expect(page.locator('.collapsed-item')).toHaveCount(2)
+  await expect(page.locator('.collapsed-item').first()).toContainText('Complete · False positive')
+  await page.locator('.collapsed-item',{hasText:'TSi.001'}).getByRole('button',{name:'Edit screening decision for Sample Investor A'}).click()
+  await expect(page.locator('.review-card textarea')).toHaveValue('Different nationality and year of birth')
+  const [screenExport]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Export Excel'}).click()])
+  expect(screenExport.suggestedFilename()).toMatch(/^Sanctions Screening - .*\.xlsx$/)
+
+  // AML periodic review: Sample Investor A is overdue (2026-01-01) until marked reviewed.
+  await page.getByRole('button',{name:/^AML Reviews/}).click()
+  await expect(page.locator('tbody')).toContainText('Sample Investor A')
+  await page.getByRole('button',{name:'Mark AML review complete for Sample Investor A'}).click()
+  await page.getByLabel('Comments').fill('KYC refreshed')
+  await page.getByRole('button',{name:'Save',exact:true}).click()
+  await expect(page.getByText('Changes saved.',{exact:true})).toBeVisible()
+  await expect(page.locator('tbody')).not.toContainText('Sample Investor A')
+  await page.getByLabel('Show').selectOption('all')
+  await expect(page.locator('tr',{hasText:'Sample Investor A'})).toContainText('Up to date')
+  await expect(page.locator('tr',{hasText:'Sample Investor A'})).toContainText('KYC refreshed')
+
+  // Decisions survive a reload.
+  await page.reload()
+  await loaded(page)
+  await page.getByRole('button',{name:/^AML Reviews/}).click()
+  await page.getByLabel('Show').selectOption('all')
+  await expect(page.locator('tr',{hasText:'Sample Investor A'})).toContainText('KYC refreshed')
+
+  // Month pack and Excel copies.
+  await page.locator('header.topbar select').selectOption('2026-09')
+  await loaded(page)
+  await page.getByRole('button',{name:'Dashboard',exact:true}).click()
+  const [pack]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download month pack (ZIP)'}).click()])
+  expect(pack.suggestedFilename()).toBe('2026-09 Monthly Report Pack.zip')
+  const [depositExcel]=await Promise.all([page.waitForEvent('download'),page.locator('.report-block',{hasText:'Deposit Report'}).getByRole('button',{name:'Excel'}).click()])
+  expect(depositExcel.suggestedFilename()).toBe('2026-09 Deposit Report.xlsx')
+  const [monitoringExcel]=await Promise.all([page.waitForEvent('download'),page.locator('.report-block',{hasText:'Transaction Monitoring Report'}).getByRole('button',{name:'Excel'}).click()])
+  expect(monitoringExcel.suggestedFilename()).toBe('2026-09 Transaction Monitoring Report.xlsx')
+  await page.getByRole('button',{name:'Administration',exact:true}).click()
+  await expect(page.locator('tbody').last()).toContainText('Monthly report pack')
 })

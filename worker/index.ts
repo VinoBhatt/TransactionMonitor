@@ -84,10 +84,17 @@ async function api(request:Request,env:Env) {
   if(user.must_change_password)throw new HttpError(403,'Change your temporary password before opening the workspace.')
   if(path==='/api/report-log' && request.method==='POST'){
     // Reports are generated in the browser; this records who produced which report and when.
-    const input=z.object({kind:z.enum(['monitoring','deposits','staff','staff-all']),month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),subject:z.string().trim().max(200).optional()}).parse(await body(request))
+    const input=z.object({kind:z.enum(['monitoring','deposits','staff','staff-all','pack']),month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),subject:z.string().trim().max(200).optional()}).parse(await body(request))
     await env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES (?,?,'report_downloaded',?,?)")
       .bind(`report:${input.kind}:${input.month}${input.subject?`:${input.subject}`:''}`,crypto.randomUUID(),new Date().toISOString(),user.id).run()
     return json({ok:true})
+  }
+  if(path==='/api/screening/unsc' && request.method==='GET'){
+    // Downloads the public UN Security Council Consolidated List. Nothing about investors is sent;
+    // names are compared in the browser.
+    const list=await fetch('https://scsanctions.un.org/resources/xml/en/consolidated.xml',{headers:{'User-Agent':'TransactionMonitor sanctions screening'}})
+    if(!list.ok)throw new HttpError(502,`The UN list could not be downloaded (HTTP ${list.status}). Upload the XML file instead.`)
+    return new Response(list.body,{headers:{'Content-Type':'application/xml; charset=utf-8','Cache-Control':'no-store'}})
   }
   if(path==='/api/users' && request.method==='GET'){
     if(user.role!=='admin')throw new HttpError(403,'Only an Admin can manage accounts.')
@@ -170,6 +177,8 @@ async function api(request:Request,env:Env) {
         if(job.dataset.startsWith('signoff:') && job.dataset!==`signoff:${row.month}`)throw new HttpError(400,'Sign-off month mismatch.')
         if(job.dataset.startsWith('review:')){row.reviewedAt=new Date().toISOString();row.reviewedBy=user.display_name}
         if(job.dataset.startsWith('signoff:')){row.updatedAt=new Date().toISOString();row.reviewedBy=user.display_name}
+        if(job.dataset.startsWith('amlreview:')){if(job.dataset!==`amlreview:${row.investorId}`)throw new HttpError(400,'AML review ID mismatch.');row.completedAt=new Date().toISOString();row.completedBy=user.display_name}
+        if(job.dataset.startsWith('screen:')){if(job.dataset!==`screen:${row.key}`)throw new HttpError(400,'Screening ID mismatch.');row.reviewedAt=new Date().toISOString();row.reviewedBy=user.display_name}
       }
       await env.DB.prepare(`INSERT OR REPLACE INTO records(dataset,version,position,payload) SELECT ?,?,CAST(key AS INTEGER)+?,value FROM json_each(?) WHERE EXISTS(SELECT 1 FROM imports WHERE id=?) AND NOT EXISTS(SELECT 1 FROM datasets WHERE version=?)`).bind(job.dataset,job.id,input.offset,JSON.stringify(items),job.id,job.id).run()
       return json({ok:true})

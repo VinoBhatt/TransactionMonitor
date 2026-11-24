@@ -310,6 +310,21 @@ export function runRules(transactions: Transaction[], rules: RuleConfig[], histo
     })
   }
 
+  const largeOut = byId['TM-007']
+  if (largeOut?.enabled) {
+    const out = new Map<string, Transaction[]>()
+    for (const t of transactions.filter(isWithdrawal)) { const key = `${monthKey(t.date)}|${investorKey(t)}`; out.set(key, [...(out.get(key) || []), t]) }
+    for (const [key, txs] of out) {
+      const [month, ...rest] = key.split('|'), inv = rest.join('|'), total = txs.reduce((s, t) => s + t.amount, 0)
+      if (total > (largeOut.threshold ?? 30000)) flags.push({
+        id:`${month}|${inv}|TM-007`, monthKey:month, investorKey:inv, investorName:txs[0].name, ...commonFor(txs[0].name),
+        ruleId:'TM-007', ruleName:largeOut.name, severity:'Medium', amount:total, transactionCount:txs.length,
+        reason:`Aggregate withdrawals of RM${total.toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2})} exceed RM${(largeOut.threshold ?? 30000).toLocaleString('en-MY')} in the month.`,
+        transactionRows:txs.map(t=>t.sourceRow)
+      })
+    }
+  }
+
   const rapid = byId['TM-004']
   if (rapid?.enabled) {
     const withdrawals = transactions.filter(isWithdrawal).filter(t=>t.date)
@@ -336,6 +351,19 @@ export function staffInvestments(transactions: Transaction[], staff: StaffMember
     .filter(t => norm(t.action)==='investment committed' && staffMap.has(normalizeName(t.name)))
     .map(t => ({ transaction:t, staff:staffMap.get(normalizeName(t.name))!, note:noteMap.get(String(t.noteId)) }))
     .sort((a,b)=>(a.transaction.date?.getTime()||0)-(b.transaction.date?.getTime()||0))
+}
+
+// Sheet names must be unique and at most 31 characters, without :  / ? * [ ].
+export function exportSheets(filename: string, sheets: { name: string, rows: Record<string, unknown>[] }[]) {
+  const wb = XLSX.utils.book_new(), used = new Set<string>()
+  for (const sheet of sheets) {
+    const base = sheet.name.replace(/[:\\/?*[\]]/g, ' ').slice(0, 28).trim() || 'Sheet'
+    let name = base.slice(0, 31), n = 2
+    while (used.has(name.toLowerCase())) name = `${base} ${n++}`
+    used.add(name.toLowerCase())
+    XLSX.utils.book_append_sheet(wb, sheet.rows.length ? XLSX.utils.json_to_sheet(sheet.rows) : XLSX.utils.aoa_to_sheet([['Nil']]), name)
+  }
+  XLSX.writeFile(wb, filename)
 }
 
 export function exportRowsToXlsx(filename: string, sheetName: string, rows: Record<string, unknown>[]) {
