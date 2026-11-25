@@ -12,10 +12,11 @@ export type MonitoringReportInput = {
   generatedBy: string
 }
 
-export type DepositReportInput = {
+export type ActivityReportInput = {
   month: string
   transactions: Transaction[]
   flags: Flag[]
+  notes?: NoteMasterRow[]
   generatedBy: string
   investorIdFor?: (name: string) => string | undefined
 }
@@ -36,7 +37,6 @@ const stamp = (d: Date | null) => d ? new Intl.DateTimeFormat('en-MY', { day: '2
 const safeName = (value: string) => value.replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim() || 'Unnamed'
 
 export const monitoringFileName = (month: string) => `${month} Transaction Monitoring Report.pdf`
-export const depositFileName = (month: string) => `${month} Deposit Report.pdf`
 export const staffFileName = (month: string, staff: StaffMember) => `${month} Staff Investment Report - ${safeName(staff.name)}.pdf`
 
 async function load() {
@@ -180,45 +180,74 @@ export async function monitoringReport(input: MonitoringReportInput) {
   return doc.output('blob')
 }
 
-// Every deposit in the month, not only the investors above the TM-001 threshold.
-export async function depositReport(input: DepositReportInput) {
+export type ActivityKind = 'deposits' | 'investments' | 'withdrawals'
+
+// What each activity report lists. Deposits and withdrawals mark investors caught by their threshold rule.
+export const activityKinds: Record<ActivityKind, { title: string, noun: string, plural: string, verb: string, rule?: { id: string, label: string } }> = {
+  deposits: { title: 'Deposit Report', noun: 'deposit', plural: 'Deposits', verb: 'deposited', rule: { id: 'TM-001', label: 'TM-001' } },
+  investments: { title: 'Investment Committed Report', noun: 'investment', plural: 'Investments', verb: 'invested' },
+  withdrawals: { title: 'Withdrawal Report', noun: 'withdrawal', plural: 'Withdrawals', verb: 'withdrawn', rule: { id: 'TM-007', label: 'TM-007' } },
+}
+
+export function activityRows(kind: ActivityKind, transactions: Transaction[]) {
+  return transactions.filter(kind === 'deposits' ? isDeposit : kind === 'withdrawals' ? isWithdrawal : t => t.action.trim().toLowerCase() === 'investment committed')
+}
+
+export const activityFileName = (kind: ActivityKind, month: string) => `${month} ${activityKinds[kind].title}.pdf`
+
+// Every transaction of one kind in the month: summary, totals per investor, then each transaction.
+export async function activityReport(kind: ActivityKind, input: ActivityReportInput) {
   const tools = await load()
   const doc = new tools.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+  const config = activityKinds[kind]
   const label = monthLabel(input.month)
-  const deposits = input.transactions.filter(isDeposit)
-  const mandatory = input.flags.filter(f => f.ruleId === 'TM-001')
-  const depositTotal = deposits.reduce((s, t) => s + t.amount, 0)
-  const flaggedKeys = new Set(mandatory.map(f => f.investorKey))
-  const idFor = (t: Transaction) => mandatory.find(f => f.investorKey === investorKey(t))?.investorId || input.investorIdFor?.(t.name) || '-'
+  const rows = activityRows(kind, input.transactions)
+  const total = rows.reduce((s, t) => s + t.amount, 0)
+  const ruleFlags = config.rule ? input.flags.filter(f => f.ruleId === config.rule!.id) : []
+  const flaggedKeys = new Set(ruleFlags.map(f => f.investorKey))
+  const idFor = (t: Transaction) => input.flags.find(f => f.investorKey === investorKey(t))?.investorId || input.investorIdFor?.(t.name) || '-'
+  const notes = new Map((input.notes || []).map(n => [String(n.noteId), n]))
   const byInvestor = new Map<string, Transaction[]>()
-  for (const t of deposits) byInvestor.set(investorKey(t), [...(byInvestor.get(investorKey(t)) || []), t])
+  for (const t of rows) byInvestor.set(investorKey(t), [...(byInvestor.get(investorKey(t)) || []), t])
   const investorRows = [...byInvestor].map(([key, list]) => ({ key, list, total: list.reduce((s, t) => s + t.amount, 0) })).sort((a, b) => b.total - a.total)
+  const rejected = kind === 'withdrawals' ? input.transactions.filter(t => /^withdrawal/i.test(t.action.trim()) && /reject/i.test(t.action)).length : 0
 
-  let y = header(doc, 'Monthly Deposit Report', `DEPOSIT REPORT - ${label.toUpperCase()}`, input.generatedBy)
+  let y = header(doc, `Monthly ${config.title}`, `${config.title.toUpperCase()} - ${label.toUpperCase()}`, input.generatedBy)
   y = heading(doc, '1. Summary', y + 2)
   y = summaryTable(tools, doc, y, [
     ['Review month', label],
-    ['Deposits', `${deposits.length} transaction(s)`],
-    ['Investors depositing', String(investorRows.length)],
-    ['Total deposited', `RM ${amount(depositTotal)}`],
-    ['Investors above RM30,000 (TM-001)', `${mandatory.length} investor(s), RM ${amount(mandatory.reduce((s, f) => s + f.amount, 0))}`],
+    [config.plural, `${rows.length} transaction(s)`],
+    ['Investors', String(investorRows.length)],
+    [`Total ${config.verb}`, `RM ${amount(total)}`],
+    ...(kind === 'investments' ? [['Notes invested in', String(new Set(rows.map(t => t.noteId)).size)] as [string, string]] : []),
+    ...(config.rule ? [[`Investors flagged under ${config.rule.label}`, ruleFlags.length ? `${ruleFlags.length} investor(s), RM ${amount(ruleFlags.reduce((s, f) => s + f.amount, 0))}` : (kind === 'withdrawals' && !input.flags.some(f => f.ruleId === 'TM-007') ? 'None (TM-007 is off or nothing exceeded it)' : 'None')] as [string, string]] : []),
+    ...(rejected ? [['Rejected withdrawals (excluded)', String(rejected)] as [string, string]] : []),
   ])
-  y = heading(doc, '2. Deposits by investor', y)
-  y = table(tools, doc, y, ['No.', 'Investor', 'Investor ID', 'Account No.', 'Deposits', 'Total (RM)', 'TM-001'],
-    investorRows.map((row, i) => [i + 1, row.list[0].name, idFor(row.list[0]), row.list[0].accountNo || '-', row.list.length, amount(row.total), flaggedKeys.has(row.key) ? 'Above RM30,000' : '-']),
-    { rightAlign: [4, 5], foot: deposits.length ? ['', 'Total', '', '', deposits.length, amount(depositTotal), ''] : undefined })
-  if (!deposits.length) y = paragraph(doc, 'Nil. No deposits were recorded for this month.', y - 4) + 4
-  if (deposits.length) {
-    y = heading(doc, '3. Deposit transactions', y)
-    const sorted = [...deposits].sort((a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0))
-    y = table(tools, doc, y, ['No.', 'Date / Time', 'Investor', 'Investor ID', 'Bank', 'Pay via', 'Transaction No.', 'Amount (RM)'],
-      sorted.map((t, i) => [i + 1, stamp(t.date), t.name, idFor(t), t.bank || '-', t.payVia || '-', t.transactionNo || '-', amount(t.amount)]),
-      { rightAlign: [7], foot: ['', '', 'Total', '', '', '', '', amount(depositTotal)] })
+  y = heading(doc, `2. ${config.plural} by investor`, y)
+  y = table(tools, doc, y, ['No.', 'Investor', 'Investor ID', 'Account No.', config.plural, 'Total (RM)', ...(config.rule ? [config.rule.label] : kind === 'investments' ? ['Notes'] : [])],
+    investorRows.map((row, i) => [i + 1, row.list[0].name, idFor(row.list[0]), row.list[0].accountNo || '-', row.list.length, amount(row.total),
+      ...(config.rule ? [flaggedKeys.has(row.key) ? 'Flagged' : '-'] : kind === 'investments' ? [String(new Set(row.list.map(t => t.noteId)).size)] : [])]),
+    { rightAlign: [4, 5], foot: rows.length ? ['', 'Total', '', '', rows.length, amount(total), ...(config.rule || kind === 'investments' ? [''] : [])] : undefined })
+  if (!rows.length) y = paragraph(doc, `Nil. No ${config.plural.toLowerCase()} were recorded for this month.`, y - 4) + 4
+  if (rows.length) {
+    y = heading(doc, `3. ${config.noun[0].toUpperCase()}${config.noun.slice(1)} transactions`, y)
+    const sorted = [...rows].sort((a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0))
+    if (kind === 'investments') {
+      y = table(tools, doc, y, ['No.', 'Date / Time', 'Investor', 'Investor ID', 'Note Reference ID', 'Note Name', 'Amount (RM)'],
+        sorted.map((t, i) => { const note = notes.get(String(t.noteId)); return [i + 1, stamp(t.date), t.name, idFor(t), note?.referenceId || t.noteId || '-', note?.noteName || '-', amount(t.amount)] }),
+        { rightAlign: [6], foot: ['', '', 'Total', '', '', '', amount(total)] })
+    } else {
+      y = table(tools, doc, y, ['No.', 'Date / Time', 'Investor', 'Investor ID', 'Bank', 'Account No.', 'Pay via', 'Transaction No.', 'Amount (RM)'],
+        sorted.map((t, i) => [i + 1, stamp(t.date), t.name, idFor(t), t.bank || '-', t.accountNo || '-', t.payVia || '-', t.transactionNo || '-', amount(t.amount)]),
+        { rightAlign: [8], foot: ['', '', 'Total', '', '', '', '', '', amount(total)] })
+    }
   }
   signatures(doc, y + 4, [{ role: 'Prepared by (Compliance Officer)' }, { role: 'Reviewed by (Chief Compliance Officer)' }])
-  footer(doc, `Deposit Report · ${label}`)
+  footer(doc, `${config.title} · ${label}`)
   return doc.output('blob')
 }
+
+export const depositReport = (input: ActivityReportInput) => activityReport('deposits', input)
 
 export async function staffReport(input: StaffReportInput) {
   const tools = await load()
