@@ -3,13 +3,15 @@ import { resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { hashPassword } from '../shared/password.ts'
+import { smtpAccount, startFakeSmtp } from './fake-smtp.mjs'
 const directory=resolve('.wrangler',`test-${randomUUID()}`)
 mkdirSync(directory,{recursive:true})
 const config=JSON.parse(readFileSync('wrangler.jsonc','utf8'))
 config.main=resolve(config.main)
 config.assets.directory=resolve('dist')
 config.d1_databases[0].migrations_dir=resolve('migrations')
-config.vars={AUTH_PEPPER:'local-integration-test-pepper-at-least-32-characters'}
+config.vars={AUTH_PEPPER:'local-integration-test-pepper-at-least-32-characters',SMTP_HOST:'127.0.0.1',SMTP_PORT:'2525',SMTP_TLS:'off',SMTP_USER:smtpAccount.user,SMTP_PASS:smtpAccount.pass}
+startFakeSmtp()
 delete config.build
 writeFileSync(resolve(directory,'wrangler.json'),JSON.stringify(config))
 const cli=resolve('node_modules/wrangler/bin/wrangler.js')

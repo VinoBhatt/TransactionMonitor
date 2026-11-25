@@ -20,6 +20,8 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
 export const amlReviewSchema = z.object({investorId:name,name,nextReviewDate:isoDate,comments:text,completedBy:name,completedAt:z.iso.datetime()})
 export const screeningMatchSchema = z.object({key:name,list:z.enum(['UNSC','MOHA']),investorId:text,investorName:name,entryName:name,entryRef:text,entryDetail:text,score:z.number().min(0).max(1)})
 export const screeningDecisionSchema = z.object({key:name,decision:z.enum(['False positive','True match']),comments:text,reviewedBy:name,reviewedAt:z.iso.datetime()})
+export const notificationSchema = z.object({recipients:z.array(z.email().max(254)).max(20),onFlags:z.boolean(),onScreening:z.boolean()})
+export type NotificationSettings = z.infer<typeof notificationSchema>
 export const signoffSchema = z.object({month:z.string().regex(/^\d{4}-\d{2}$/),reviewedBy:name,designation:name,comments:text,status:z.enum(['Pending','Completed']),updatedAt:z.iso.datetime()})
 export type Signoff = z.infer<typeof signoffSchema>
 export function schemaFor(dataset:string) {
@@ -28,5 +30,5 @@ export function schemaFor(dataset:string) {
   if (/^signoff:\d{4}-(0[1-9]|1[0-2])$/.test(dataset)) return signoffSchema
   if (/^amlreview:.{1,500}$/.test(dataset)) return amlReviewSchema
   if (/^screen:.{1,500}$/.test(dataset)) return screeningDecisionSchema
-  return ({staff:staffSchema,history:historySchema,notes:noteSchema,investors:investorSchema,profiles:profileSchema,screening:screeningMatchSchema,context:contextSchema,rules:ruleSchema} as Record<string,z.ZodType>)[dataset]
+  return ({staff:staffSchema,history:historySchema,notes:noteSchema,investors:investorSchema,profiles:profileSchema,screening:screeningMatchSchema,notifications:notificationSchema,context:contextSchema,rules:ruleSchema} as Record<string,z.ZodType>)[dataset]
 }

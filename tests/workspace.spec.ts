@@ -431,3 +431,59 @@ test('sanctions screening, AML periodic reviews, month pack and Excel copies',as
   await page.getByRole('button',{name:'Administration',exact:true}).click()
   await expect(page.locator('tbody').last()).toContainText('Monthly report pack')
 })
+
+type SentMail={from:string,to:string[],body:string}
+const sentMail=async()=>await (await fetch('http://127.0.0.1:8790/messages')).json() as SentMail[]
+// Decodes the base64 MIME parts so the test can read what the recipients will see.
+const readable=(mail:SentMail)=>mail.body.replace(/Content-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=\r\n]+?)\r\n--/g,(_,b64:string)=>Buffer.from(b64.replace(/\s/g,''),'base64').toString('utf8')+'\n--')
+
+test('email alerts: settings, test email, and an alert with counts only after an upload',async({page})=>{
+  await page.goto('/')
+  await page.getByLabel('Username',{exact:true}).fill('admin')
+  await page.getByLabel('Password',{exact:true}).fill('local-integration-test-password')
+  await page.getByRole('button',{name:'Sign in',exact:true}).click()
+  await loaded(page)
+  await page.getByRole('button',{name:'Administration',exact:true}).click()
+  await expect(page.getByText('Sending from notification@test.local')).toBeVisible()
+  await page.getByLabel('Recipients (one email address per line)').fill('not-an-email')
+  await expect(page.getByText('Not a valid email address: not-an-email')).toBeVisible()
+  await expect(page.getByRole('button',{name:'Save alert settings'})).toBeDisabled()
+  await page.getByLabel('Recipients (one email address per line)').fill('compliance@example.com\nchief@example.com')
+  await page.getByRole('button',{name:'Save alert settings'}).click()
+  await expect(page.getByText('Email alert settings saved.')).toBeVisible()
+  const before=(await sentMail()).length
+  await page.getByRole('button',{name:'Send test email'}).click()
+  await expect(page.getByText('Test email sent to 2 recipient(s).',{exact:false})).toBeVisible()
+  const testMail=(await sentMail())[before]
+  expect(testMail.from).toBe('notification@test.local')
+  expect(testMail.to).toEqual(['compliance@example.com','chief@example.com'])
+  expect(testMail.body).toContain('Subject: [Cofundr TM] Test alert from Cofundr Transaction Monitoring')
+  expect(readable(testMail)).toContain('Email alerts are working')
+
+  // A new month with one investor above RM30,000 triggers a flag alert.
+  const csv='#,Note ID,Name,User Type,Bank,Account No,Amount(MYR),Transaction No,Transaction Proof,Date,Pay Via,Action\n1,0,Alert Test Investor,Investor,Sample Bank,90001,31000,,,10-Feb-2024 10:00:00,FPX,Deposit\n2,0,Small Depositor,Investor,Sample Bank,90002,500,,,11-Feb-2024 10:00:00,FPX,Deposit\n'
+  await page.getByRole('button',{name:'Monthly Upload',exact:true}).click()
+  await page.locator('.upload-card',{hasText:'1. Monthly Transaction Log'}).locator('input[type=file]').setInputFiles({name:'alert-month.csv',mimeType:'text/csv',buffer:Buffer.from(csv)})
+  await expect(page.getByText(/Import complete: 1 month\(s\) updated \(February 2024\).*Email alert sent to 2 recipient\(s\)\./)).toBeVisible()
+  const alert=(await sentMail()).at(-1)!
+  expect(alert.body).toContain('Subject: [Cofundr TM] February 2024: 1 investor(s) above RM30,000')
+  const text=readable(alert)
+  expect(text).toContain('February 2024: 1 investor(s) above RM30,000 (TM-001, total RM 31,000.00); 1 flag(s) in all')
+  expect(text).toContain('http://127.0.0.1:8788')
+  // Counts only: no investor names or account numbers leave the workspace.
+  for(const secret of ['Alert Test Investor','Small Depositor','90001'])expect(text).not.toContain(secret)
+
+  // Uploading the same file again changes nothing, so no second alert.
+  const count=(await sentMail()).length
+  await page.getByRole('button',{name:'Monthly Upload',exact:true}).click()
+  await page.locator('.upload-card',{hasText:'1. Monthly Transaction Log'}).locator('input[type=file]').setInputFiles({name:'alert-month.csv',mimeType:'text/csv',buffer:Buffer.from(csv)})
+  await expect(page.getByText(/0 month\(s\) updated/)).toBeVisible()
+  expect((await sentMail()).length).toBe(count)
+
+  // Alerts are recorded in the audit trail.
+  const settings=await page.request.post('/api/notifications/send',{headers:{Origin:'http://127.0.0.1:8788'},data:{event:'flags',months:[{month:'2024-02',tm001:1,tm001Amount:1,total:1}]}})
+  expect(settings.status()).toBe(200)
+  await page.getByRole('button',{name:'Administration',exact:true}).click()
+  await expect(page.locator('tbody').last()).toContainText('Sent email alert')
+  await expect(page.locator('tbody').last()).toContainText('Flag alert')
+})

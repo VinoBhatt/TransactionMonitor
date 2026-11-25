@@ -186,6 +186,16 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
     })
   }
   const saveStaff=(next:StaffMember[])=>save(async()=>{await persist('staff',next);setStaff(next)})
+  // Sends an alert email when one is due. Problems are reported in the summary, never as a failed save.
+  async function notify(payload:unknown){
+    try{
+      const result=await request<{sent:boolean,recipients?:number}>('/notifications/send','POST',payload)
+      return result.sent?` Email alert sent to ${result.recipients} recipient(s).`:''
+    }catch(e){
+      if(e instanceof ApiError&&e.status===503)return ''
+      return ` Email alert could not be sent: ${e instanceof Error?e.message:'unknown error'}`
+    }
+  }
   async function uploadTransactions(file?:File){
     if(!file)return
     await save(async()=>{
@@ -211,7 +221,14 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
       }
       setMonths(Object.keys(datasetIndex.current).filter(k=>k.startsWith('transactions:')).map(k=>k.slice(13)).sort().reverse())
       setSourceName(file.name);setFilterMonth(changed.length?changed[changed.length-1]:'');setTab('dashboard')
-      return `Import complete: ${changed.length} month(s) updated${changed.length?` (${changed.map(monthLabel).join(', ')})`:''}; ${unchanged.length} unchanged month(s) kept with their reviews.`
+      // Alert on the months that were replaced and now have flags.
+      const flagged=changed.map(month=>{
+        const found=runRules([...(groups.get(month)||[]),...(groups.get(nextMonth(month))||txByMonth[nextMonth(month)]||[])],rules,history,priorContext,findProfile).filter(f=>f.monthKey===month)
+        const tm001=found.filter(f=>f.ruleId==='TM-001')
+        return {month,tm001:tm001.length,tm001Amount:Math.round(tm001.reduce((s,f)=>s+f.amount,0)*100)/100,total:found.length}
+      }).filter(m=>m.total>0)
+      const emailed=flagged.length?await notify({event:'flags',months:flagged.slice(-36)}):''
+      return `Import complete: ${changed.length} month(s) updated${changed.length?` (${changed.map(monthLabel).join(', ')})`:''}; ${unchanged.length} unchanged month(s) kept with their reviews.${emailed}`
     })
   }
   async function uploadNotes(file?:File){if(file)await save(async()=>{
@@ -228,6 +245,9 @@ function Workspace({user,onLogout,onChangePassword}:{user:User,onLogout:()=>void
   })}
   async function saveScreening(matches:ScreeningMatch[],summary:string){await save(async()=>{
     await persist('screening',matches,summary.slice(0,500));setScreening(matches);setScreeningRun(summary.slice(0,500))
+    if(!matches.length)return ''
+    const emailed=await notify({event:'screening',unsc:matches.filter(m=>m.list==='UNSC').length,moha:matches.filter(m=>m.list==='MOHA').length})
+    return emailed?`Screening saved: ${matches.length} possible match(es).${emailed}`:''
   })}
   async function decideScreening(key:string,decision:ScreeningDecision['decision'],comments:string){await save(async()=>{
     const row={key,decision,comments,reviewedBy:user.displayName,reviewedAt:new Date().toISOString()}

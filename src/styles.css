@@ -159,3 +159,9 @@ tbody tr:hover td{background:#fafcfd}
   .month-picker{min-width:180px}
   .workspace-toolbar>div{flex-wrap:wrap;justify-content:flex-end}
 }
+
+.status-line{font-size:13px;padding:9px 12px;border-radius:8px;margin:0 0 12px}
+.status-line.ok{background:#edf7e7;color:#3f6a20}
+.status-line.warn{background:#fff8e8;color:#735411;border:1px solid #f3d993}
+.email-settings{display:grid;gap:12px;max-width:640px}
+.email-settings .switch-row{padding-bottom:0;font-size:13px;color:#24445f}

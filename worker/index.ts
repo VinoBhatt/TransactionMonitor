@@ -3,6 +3,9 @@ import { schemaFor } from '../shared/schema'
 import { canViewAudit, canWrite } from '../shared/auth'
 import type { Role, User } from '../shared/auth'
 import { hashPassword, verifyPassword } from '../shared/password'
+import { notificationSchema } from '../shared/schema'
+import { alertEmail, mailConfig, sendMail } from './email'
+import type { MailEnv } from './email'
 
 type UserRow={id:string,username:string,display_name:string,role:Role,password_hash:string,must_change_password:number,active:number}
 const publicUser=(user:UserRow):User=>({id:user.id,username:user.username,displayName:user.display_name,role:user.role,mustChangePassword:!!user.must_change_password})
@@ -88,6 +91,53 @@ async function api(request:Request,env:Env) {
     await env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES (?,?,'report_downloaded',?,?)")
       .bind(`report:${input.kind}:${input.month}${input.subject?`:${input.subject}`:''}`,crypto.randomUUID(),new Date().toISOString(),user.id).run()
     return json({ok:true})
+  }
+  if(path==='/api/notifications/status' && request.method==='GET'){
+    const config=mailConfig(env as Env&MailEnv)
+    return json({configured:!!config,from:config?.user||''})
+  }
+  if(path==='/api/notifications/send' && request.method==='POST'){
+    const month=z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), count=z.number().int().min(0).max(1_000_000)
+    const input=z.discriminatedUnion('event',[
+      z.object({event:z.literal('test')}),
+      z.object({event:z.literal('flags'),months:z.array(z.object({month,tm001:count,tm001Amount:z.number().finite().min(0),total:count})).min(1).max(36)}),
+      z.object({event:z.literal('screening'),unsc:count,moha:count}),
+    ]).parse(await body(request))
+    if(input.event==='test'&&user.role!=='admin')throw new HttpError(403,'Only an Admin can send a test email.')
+    const config=mailConfig(env as Env&MailEnv)
+    if(!config)throw new HttpError(503,'Email is not set up yet. Add the SMTP secrets to the Worker first.')
+    const stored=await env.DB.prepare("SELECT r.payload FROM datasets d JOIN records r ON r.dataset=d.name AND r.version=d.version WHERE d.name='notifications' ORDER BY r.position LIMIT 1").first<{payload:string}>()
+    const settings=stored?notificationSchema.parse(JSON.parse(stored.payload)):null
+    if(input.event!=='test'){
+      if(!settings?.recipients.length)return json({sent:false,reason:'No alert recipients are set up.'})
+      if((input.event==='flags'&&!settings.onFlags)||(input.event==='screening'&&!settings.onScreening))return json({sent:false,reason:'This alert is switched off.'})
+    }
+    // A simple guard against a runaway loop filling inboxes.
+    const recent=await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action='email_sent' AND created_at>?").bind(new Date(Date.now()-3600_000).toISOString()).first<{n:number}>()
+    if((recent?.n||0)>=30)throw new HttpError(429,'Too many alert emails in the last hour. Try again later.')
+    const to=input.event==='test'?(settings?.recipients.length?settings.recipients:[config.user]):settings!.recipients
+    const by=`${user.display_name} on ${new Date().toLocaleString('en-MY',{timeZone:'Asia/Kuala_Lumpur',dateStyle:'medium',timeStyle:'short'})}`
+    const label=(m:string)=>new Intl.DateTimeFormat('en-MY',{month:'long',year:'numeric',timeZone:'UTC'}).format(new Date(`${m}-01T00:00:00Z`))
+    const rm=(n:number)=>`RM ${n.toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2})}`
+    let subject:string, mail:{text:string,html:string}
+    if(input.event==='test'){
+      subject='Test alert from Cofundr Transaction Monitoring'
+      mail=alertEmail('Email alerts are working','This test was sent by '+by+'.',['Flag alerts: '+(settings?.onFlags?'on':'off'),'Sanctions screening alerts: '+(settings?.onScreening?'on':'off'),`Recipients: ${to.length}`],url.origin,'Open the workspace')
+    }else if(input.event==='flags'){
+      const tm001=input.months.reduce((n,m)=>n+m.tm001,0)
+      subject=input.months.length===1?`${label(input.months[0].month)}: ${input.months[0].tm001} investor(s) above RM30,000`:`${input.months.length} months uploaded: ${tm001} investor-month(s) above RM30,000`
+      mail=alertEmail('New transaction monitoring flags',`A transaction log was uploaded by ${by}. These flags are pending compliance review.`,
+        input.months.map(m=>`${label(m.month)}: ${m.tm001} investor(s) above RM30,000 (TM-001, total ${rm(m.tm001Amount)}); ${m.total} flag(s) in all`),url.origin,'Open the review queue')
+    }else{
+      const total=input.unsc+input.moha
+      subject=`Sanctions screening: ${total} possible match(es) to review`
+      mail=alertEmail('Possible sanctions list matches',`A sanctions screening was run by ${by}. Each possible match must be reviewed as a false positive or a true match.`,
+        [...(input.unsc?[`UNSC Consolidated List: ${input.unsc} possible match(es)`]:[]),...(input.moha?[`MOHA list: ${input.moha} possible match(es)`]:[])],url.origin,'Review the matches')
+    }
+    try{await sendMail(config,{to,subject:`[Cofundr TM] ${subject}`,...mail})}
+    catch(e){throw new HttpError(502,e instanceof Error?e.message:'The email could not be sent.')}
+    await env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES (?,?,'email_sent',?,?)").bind(`email:${input.event}`,crypto.randomUUID(),timestamp(),user.id).run()
+    return json({sent:true,recipients:to.length})
   }
   if(path==='/api/screening/unsc' && request.method==='GET'){
     // Downloads the public UN Security Council Consolidated List. Nothing about investors is sent;
