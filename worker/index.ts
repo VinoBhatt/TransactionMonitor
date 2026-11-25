@@ -94,7 +94,7 @@ async function api(request:Request,env:Env) {
   }
   if(path==='/api/notifications/status' && request.method==='GET'){
     const config=mailConfig(env as Env&MailEnv)
-    return json({configured:!!config,from:config?.user||''})
+    return json({configured:!!config,from:config?.user||'',server:config?`${config.host}:${config.port}`:''})
   }
   if(path==='/api/notifications/send' && request.method==='POST'){
     const month=z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), count=z.number().int().min(0).max(1_000_000)
@@ -135,7 +135,7 @@ async function api(request:Request,env:Env) {
         [...(input.unsc?[`UNSC Consolidated List: ${input.unsc} possible match(es)`]:[]),...(input.moha?[`MOHA list: ${input.moha} possible match(es)`]:[])],url.origin,'Review the matches')
     }
     try{await sendMail(config,{to,subject:`[Cofundr TM] ${subject}`,...mail})}
-    catch(e){throw new HttpError(502,e instanceof Error?e.message:'The email could not be sent.')}
+    catch(e){throw new HttpError(502,`${e instanceof Error?e.message:'The email could not be sent.'} (mail server ${config.host}:${config.port})`)}
     await env.DB.prepare("INSERT INTO audit_log(dataset,version,action,created_at,user_id) VALUES (?,?,'email_sent',?,?)").bind(`email:${input.event}`,crypto.randomUUID(),timestamp(),user.id).run()
     return json({sent:true,recipients:to.length})
   }

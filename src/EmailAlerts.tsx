@@ -8,13 +8,13 @@ const isEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 
 // Admin-only card: who receives alert emails, which alerts are on, and a test send.
 export function EmailAlerts() {
-  const [status, setStatus] = useState<{ configured: boolean, from: string } | null>(null)
+  const [status, setStatus] = useState<{ configured: boolean, from: string, server?: string } | null>(null)
   const [settings, setSettings] = useState<NotificationSettings>(empty), [text, setText] = useState('')
   const [version, setVersion] = useState(''), [busy, setBusy] = useState(false), [message, setMessage] = useState('')
 
   async function load() {
     try {
-      const [state, datasets] = await Promise.all([request<{ configured: boolean, from: string }>('/notifications/status'), request<Dataset[]>('/datasets')])
+      const [state, datasets] = await Promise.all([request<{ configured: boolean, from: string, server?: string }>('/notifications/status'), request<Dataset[]>('/datasets')])
       setStatus(state)
       const dataset = datasets.find(d => d.name === 'notifications')
       const saved = dataset ? (await readDataset<NotificationSettings>(dataset))[0] : undefined
@@ -42,7 +42,7 @@ export function EmailAlerts() {
 
   return <div className="card">
     <div className="card-head"><div><h2>Email alerts</h2><p className="muted">Emails are sent from the notification mailbox when an upload raises flags or a sanctions screening finds possible matches. They contain counts and a link only, never investor details.</p></div></div>
-    {status && <p className={`status-line ${status.configured ? 'ok' : 'warn'}`}>{status.configured ? `Sending from ${status.from}` : 'Email sending is not set up yet. The SMTP secrets must be added to the Worker before alerts can be sent.'}</p>}
+    {status && <p className={`status-line ${status.configured ? 'ok' : 'warn'}`}>{status.configured ? `Sending from ${status.from}${status.server ? ` via ${status.server}` : ''}` : 'Email sending is not set up yet. The SMTP secrets must be added to the Worker before alerts can be sent.'}</p>}
     {message && <div className={`notice ${/saved|sent to/i.test(message) ? 'success' : 'error'}`} role="status">{message}</div>}
     <div className="email-settings">
       <label>Recipients (one email address per line)<textarea rows={4} value={text} onChange={e => setText(e.target.value)} placeholder={'compliance@cofundr.com.my\nchief.compliance@cofundr.com.my'} /></label>

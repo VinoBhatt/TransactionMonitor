@@ -6,14 +6,32 @@ export type MailEnv = { SMTP_HOST?: string, SMTP_PORT?: string, SMTP_USER?: stri
 type Mode = 'on' | 'starttls' | 'off'
 export type MailConfig = { host: string, port: number, user: string, pass: string, mode: Mode }
 
+// Secrets typed at a prompt often pick up spaces, line breaks, quotes, "ssl://" or ":465"; tidy them.
+const tidy = (value?: string) => (value || '').replace(/^[\s"']+|[\s"']+$/g, '')
+function hostAndPort(raw?: string) {
+  const host = tidy(raw).replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '')
+  const match = host.match(/^(.*?)(?::(\d+))?$/)
+  return { host: (match?.[1] || '').toLowerCase(), port: match?.[2] }
+}
+
 export function mailConfig(env: MailEnv): MailConfig | null {
-  if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS) return null
-  const port = Number(env.SMTP_PORT || 465)
-  const requested = (env.SMTP_TLS || (port === 465 ? 'on' : 'starttls')).toLowerCase() as Mode
+  const parsed = hostAndPort(env.SMTP_HOST), user = tidy(env.SMTP_USER)
+  // Only line breaks are removed from the password; spaces may be part of it.
+  const pass = (env.SMTP_PASS || '').replace(/^[\r\n]+|[\r\n]+$/g, '')
+  if (!parsed.host || !user || !pass) return null
+  const port = Number(tidy(env.SMTP_PORT) || parsed.port || 465)
+  const requested = (tidy(env.SMTP_TLS) || (port === 465 ? 'on' : 'starttls')).toLowerCase() as Mode
   // Plain-text connections are only allowed to a mail server on this machine (local testing).
-  const local = env.SMTP_HOST === '127.0.0.1' || env.SMTP_HOST === 'localhost'
+  const local = parsed.host === '127.0.0.1' || parsed.host === 'localhost'
   const mode: Mode = requested === 'off' && !local ? 'starttls' : requested
-  return { host: env.SMTP_HOST, port, user: env.SMTP_USER, pass: env.SMTP_PASS, mode }
+  return { host: parsed.host, port, user, pass, mode }
+}
+
+export function checkConfig(config: MailConfig) {
+  if (!/^[a-z0-9.-]+$/.test(config.host) || config.host.length > 253) return `SMTP_HOST "${config.host}" is not a valid server name. Use only the name, e.g. mail.example.com.`
+  if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) return `SMTP_PORT "${config.port}" is not a valid port. Use 465 (SSL) or 587 (STARTTLS).`
+  if (config.port === 25) return 'Port 25 is blocked for Cloudflare Workers. Use 465 (SSL) or 587 (STARTTLS).'
+  return ''
 }
 
 class SmtpError extends Error {}
@@ -29,6 +47,8 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, what: string) {
 }
 
 export async function sendMail(config: MailConfig, message: { to: string[], subject: string, text: string, html: string }) {
+  const problem = checkConfig(config)
+  if (problem) throw new SmtpError(problem)
   let socket = connect({ hostname: config.host, port: config.port }, { secureTransport: config.mode, allowHalfOpen: false })
   let reader = socket.readable.getReader(), writer = socket.writable.getWriter(), buffer = ''
 
