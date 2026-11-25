@@ -21,8 +21,8 @@ const defaultRules: RuleConfig[] = [
   { id:'TM-003', name:'Deposit Frequency', description:'Optional: flag when an investor makes at least the configured number of deposits in the month.', enabled:false, locked:false, threshold:3 },
   { id:'TM-004', name:'Rapid Deposit / Withdrawal', description:'Optional: flag where a withdrawal of at least 80% of a deposit follows within the configured number of days.', enabled:false, locked:false, threshold:3 },
   { id:'TM-005', name:'High-Risk Customer Deposit', description:'Optional: use the AML risk rating (Customer Risk Profiling, else the historical workbook) and flag High-risk customers whose monthly deposits exceed the configured amount.', enabled:false, locked:false, threshold:10000 },
-  { id:'TM-007', name:'Large Monthly Withdrawals', description:'Optional: flag when aggregate withdrawals for the same investor exceed the configured amount in a calendar month. Rejected withdrawals are ignored.', enabled:false, locked:false, threshold:30000 },
   { id:'TM-006', name:'Historical Deposit Spike', description:'Optional: flag when current monthly deposits are at least the configured multiple of the investor\'s average positive historical monthly deposits, and also exceed RM30,000.', enabled:false, locked:false, threshold:3 },
+  { id:'TM-007', name:'Large Monthly Withdrawals', description:'Optional: flag when aggregate withdrawals for the same investor exceed the configured amount in a calendar month. Rejected withdrawals are ignored.', enabled:false, locked:false, threshold:30000 },
 ]
 
 const rm = (n:number) => `RM ${n.toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2})}`
@@ -383,7 +383,11 @@ function StaffRegister({investors,directory,staff,onChange}:{investors:string[],
 function tabTitle(tab:Tab){return ({dashboard:'Monthly Monitoring Dashboard',upload:'Monthly Data Upload',reviews:'Compliance Review Queue',staff:'Staff Investment Report',rules:'Monitoring Rules',reports:'Reports & Sign-Off',aml:'AML Periodic Reviews',screening:'Sanctions Screening',admin:'Administration'} as Record<Tab,string>)[tab]}
 function tabSubtitle(tab:Tab){return ({rules:'Thresholds for the optional monitoring rules. TM-001 is fixed.',aml:'Investors due for their periodic AML/CFT review.',screening:'UNSC Consolidated List and MOHA domestic list.',admin:'Accounts, password resets and the audit trail.'} as Partial<Record<Tab,string>>)[tab]||''}
 function noticeTone(message:string){return message==='Changes saved.'?'success':/…$/.test(message)?'':'error'}
-function NavButton({tab,current,onSelect,label,count=0}:{tab:Tab,current:Tab,onSelect:(t:Tab)=>void,label:string,count?:number}){return <button className={tab===current?'active':''} aria-current={tab===current?'page':undefined} onClick={()=>onSelect(tab)}>{label}{count>0&&<span className="nav-count"> {count}</span>}</button>}
+function NavButton({tab,current,onSelect,label,count=0}:{tab:Tab,current:Tab,onSelect:(t:Tab)=>void,label:string,count?:number}){
+  const ref=useRef<HTMLButtonElement>(null)
+  // Keeps the selected page visible in the swipeable phone menu.
+  useEffect(()=>{if(tab===current)ref.current?.scrollIntoView({block:'nearest',inline:'center'})},[tab,current])
+  return <button ref={ref} className={tab===current?'active':''} aria-current={tab===current?'page':undefined} onClick={()=>onSelect(tab)}>{label}{count>0&&<span className="nav-count"> {count}</span>}</button>}
 function Kpi({label,value,sub,tone=''}:{label:string,value:string,sub:string,tone?:string}){return <div className={`kpi ${tone}`}><span>{label}</span><strong>{value}</strong><small>{sub}</small></div>}
 function Summary({label,value}:{label:string,value:string}){return <div className="summary-row"><span>{label}</span><strong>{value}</strong></div>}
 function StatusBadge({value}:{value:string}){return <span className={`badge ${value.toLowerCase().replace(/\s+/g,'-')}`}>{value}</span>}

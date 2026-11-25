@@ -66,3 +66,96 @@
   .topbar h1{white-space:normal;font-size:23px}
   .month-picker{width:100%}
 }
+
+/* Phone layout */
+@media screen and (max-width:760px){
+  html,body{overflow-x:hidden}
+  main{padding:14px 14px 48px}
+  .sidebar{position:sticky;top:0;z-index:30;padding:10px 12px;display:flex;flex-direction:row;align-items:center;gap:10px;box-shadow:0 2px 10px rgba(7,27,50,.25)}
+  .brand{margin:0;flex:0 0 auto}
+  .brand>div:last-child{display:none}
+  .brand-mark{width:34px;height:34px;font-size:18px;border-radius:10px}
+  .sidebar nav{flex:1;min-width:0;padding-bottom:0;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .sidebar nav::-webkit-scrollbar{display:none}
+  .sidebar nav button{padding:8px 11px;font-size:13px;border-radius:8px}
+  .sidebar nav button.active{background:#2694d2;color:#fff}
+  .sidebar nav button.active .nav-count{background:#fff;color:#1779ae}
+  .workspace-toolbar{flex-direction:row;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+  .workspace-toolbar>div{gap:6px;flex-wrap:nowrap}
+  .workspace-toolbar button{padding:7px 9px;font-size:12px}
+  .user-chip strong{max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+  .avatar{width:28px;height:28px;font-size:13px}
+  .topbar{flex-direction:column;align-items:stretch;gap:10px;margin-bottom:14px;padding-bottom:12px}
+  .topbar h1{font-size:21px;white-space:normal;margin:0 0 2px}
+  .month-picker{width:100%;min-width:0}
+  .notice{margin-bottom:12px}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:12px}
+  .kpi{padding:12px;border-radius:12px;gap:3px}
+  .kpi strong{font-size:18px;overflow-wrap:anywhere}
+  .kpi span,.kpi small{font-size:11px}
+  .card,.rule-card,.upload-card{padding:14px;border-radius:12px}
+  .card-head{flex-wrap:wrap;align-items:flex-start}
+  .card-head>button,.card-head>.inline-actions{flex:0 0 auto}
+  .grid2,.report-grid{gap:12px}
+  .report-grid{grid-template-columns:1fr}
+  .monthly-reports .card-head>button{width:100%}
+  .report-block{padding:12px}
+  .button-row{width:100%}
+  .button-row>button:first-child{flex:1}
+  .upload-card{gap:12px}
+  .upload-card .button{width:100%;text-align:center;justify-content:center;display:flex}
+  .upload-card p{font-size:13px}
+  .review-main,.review-form{padding:14px}
+  .review-amount{font-size:20px}
+  .context-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px}
+  .collapsed-item{padding:10px 12px}
+  .collapsed-item .muted{min-width:0;flex-basis:100%;order:3}
+  .collapsed-item button{order:2}
+  .rule-controls{flex-wrap:wrap}
+  .toolbar>label{flex:1 1 140px}
+  .report-title h2{font-size:18px;margin-top:12px}
+  .report-title p{font-size:13px}
+  .actions{justify-content:stretch}
+  .actions>button{flex:1}
+  .signoff{grid-template-columns:1fr}
+  .inline-form{min-width:0;width:100%}
+
+  /* Tables become one card per row, each value labelled with its column. */
+  .table-wrap{overflow:visible}
+  table{border:0!important}
+  table thead{display:none}
+  table,table tbody,table tfoot,table tr,table td{display:block;width:100%}
+  table tbody tr,table tfoot tr{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:4px 12px;margin-bottom:8px}
+  table tfoot tr{background:#f1f5f9}
+  table td,.report-table td{border:0!important;border-bottom:1px solid #f1f4f7!important;padding:7px 0 7px 42%;position:relative;min-height:32px;text-align:left!important;overflow-wrap:anywhere}
+  table tr td:last-child{border-bottom:0!important}
+  table td::before{content:attr(data-label);position:absolute;left:0;top:7px;width:38%;color:#718096;font-size:12px;font-weight:600;line-height:1.3}
+  table td[data-label=""]{padding-left:0}
+  table td[data-label=""]::before{display:none}
+  table td .row-actions,table td>button{justify-content:flex-start}
+  table td.center,table td.empty-small{padding-left:0;text-align:center!important}
+}
+@media screen and (max-width:380px){
+  .workspace-toolbar{flex-wrap:wrap}
+  .kpis{grid-template-columns:1fr 1fr}
+}
+
+/* Desktop polish */
+.card,.rule-card,.upload-card,.kpi{box-shadow:0 1px 2px rgba(15,35,60,.04),0 4px 14px rgba(15,35,60,.04)}
+.upload-card,.rule-card,.report-block{transition:border-color .15s,box-shadow .15s}
+.upload-card:hover,.rule-card:hover{border-color:#cfdbe6}
+button:not(:disabled):hover{filter:brightness(.96)}
+button:focus-visible,.file-button:focus-within,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #2694d2;outline-offset:2px}
+tbody tr:hover td{background:#fafcfd}
+@media screen and (max-width:760px){
+  tbody tr:hover td{background:transparent}
+  table td .row-actions{display:flex;flex-direction:row;flex-wrap:wrap;gap:6px}
+  table td .row-actions button{padding:7px 10px;font-size:12px}
+}
+@media screen and (max-width:1050px){
+  .topbar{flex-wrap:wrap}
+  .topbar h1{white-space:normal}
+  .topbar>div{min-width:0;flex:1 1 280px}
+  .month-picker{min-width:180px}
+  .workspace-toolbar>div{flex-wrap:wrap;justify-content:flex-end}
+}
